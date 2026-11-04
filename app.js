@@ -26,6 +26,8 @@ const WEEK = ['일', '월', '화', '수', '목', '금', '토'];
 const dayLabel = (key) => { const [y, m, d] = key.split('-').map(Number); return `${m}월 ${d}일 (${WEEK[new Date(y, m - 1, d).getDay()]})`; };
 const toLocalInput = (ms) => { if (!ms) return ''; const d = new Date(ms); return `${dkey(ms)}T${pad(d.getHours())}:${pad(d.getMinutes())}`; };
 const fromLocalInput = (v) => { if (!v) return null; const [a, b] = v.split('T'); return at(a, b); };
+/* 기록의 날짜 키는 한 번만 계산해 기억(화면 그릴 때마다 수천 번 반복되므로) */
+const dk = (r) => (r._dks === r.start ? r._dk : (r._dks = r.start, r._dk = dkey(r.start)));
 const uid = () => Date.now().toString(36).slice(-6) + Math.random().toString(36).slice(2, 8);
 
 /* ---------- 상태 ---------- */
@@ -254,7 +256,7 @@ function sleepKind(s, e) {
   for (let x = s; x < e; x += 5 * MIN) { t++; if (isNightTime(x)) n++; }
   return t && n / t >= 0.5 ? '밤' : '낮';
 }
-const nightOf = (r) => (minOfDay(r.start) < 12 * 60 ? addDays(dkey(r.start), -1) : dkey(r.start));
+const nightOf = (r) => (minOfDay(r.start) < 12 * 60 ? addDays(dk(r), -1) : dk(r));
 const sleepEnd = (r, now) => r.end || now;
 const sleeps = () => S._sleeps || (S._sleeps = live().filter((r) => r.type === 'sleep'));
 const openSleep = () => { const s = sleeps(); for (let i = s.length - 1; i >= 0; i--) if (!s[i].end) return s[i]; return null; };
@@ -267,32 +269,37 @@ function morningWake(key) {
   sleeps().forEach((r) => { if (r.kind === '밤' && r.end && nightOf(r) === addDays(key, -1) && (!w || r.end > w)) w = r.end; });
   return w;
 }
-function dayNaps(key) { return sleeps().filter((r) => r.kind === '낮' && dkey(r.start) === key); }
+function dayNaps(key) { return sleeps().filter((r) => r.kind === '낮' && dk(r) === key); }
+/* 겹치는 잠(두 기기가 따로 기록한 경우 등)은 합쳐서 한 번만 센다. [시작,끝] 목록 → 합친 구간 */
+function unionSpans(spans) {
+  const s = spans.filter(([a, b]) => b > a).sort((x, y) => x[0] - y[0]);
+  const out = [];
+  s.forEach(([a, b]) => { const l = out[out.length - 1]; if (l && a <= l[1]) l[1] = Math.max(l[1], b); else out.push([a, b]); });
+  return out;
+}
+const spanMin = (spans) => spans.reduce((t, [a, b]) => t + (b - a), 0) / MIN;
 function nightStats(key) {
   const now = Date.now();
   if (set('nightMode') === 'midnight') {
     const a = dstart(key), b = dstart(addDays(key, 1));
-    let tot = 0, longest = 0;
-    sleeps().filter((r) => r.kind === '밤').forEach((r) => {
-      const s = Math.max(r.start, a), e = Math.min(sleepEnd(r, now), b);
-      if (e > s) { tot += e - s; longest = Math.max(longest, sleepEnd(r, now) - r.start); }
-    });
-    return { tot: tot / MIN, longest: longest / MIN, first: null };
+    const nights = sleeps().filter((r) => r.kind === '밤');
+    const u = unionSpans(nights.map((r) => [Math.max(r.start, a), Math.min(sleepEnd(r, now), b)]));
+    const full = unionSpans(nights.map((r) => [r.start, sleepEnd(r, now)])).filter(([s, e]) => e > a && s < b);
+    return { tot: spanMin(u), longest: full.reduce((m, [s, e]) => Math.max(m, (e - s) / MIN), 0), first: null, count: u.length };
   }
   const segs = sleeps().filter((r) => r.kind === '밤' && nightOf(r) === key);
-  let tot = 0, longest = 0;
-  segs.forEach((r) => { const d = sleepEnd(r, now) - r.start; tot += d; longest = Math.max(longest, d); });
-  return { tot: tot / MIN, longest: longest / MIN, first: segs[0] || null, count: segs.length };
+  const u = unionSpans(segs.map((r) => [r.start, sleepEnd(r, now)]));
+  return { tot: spanMin(u), longest: u.reduce((m, [s, e]) => Math.max(m, (e - s) / MIN), 0), first: segs[0] || null, count: u.length };
 }
 function daySummary(key) {
   const now = Date.now();
-  const l = live().filter((r) => dkey(r.start) === key);
+  const l = live().filter((r) => dk(r) === key);
   const feeds = l.filter((r) => r.type === 'feed');
   const naps = l.filter((r) => r.type === 'sleep' && r.kind === '낮');
   const dia = l.filter((r) => r.type === 'diaper');
   return {
     feedN: feeds.length, feedMl: feeds.reduce((s, r) => s + (Number(r.value) || 0), 0),
-    napN: naps.length, napMin: naps.reduce((s, r) => s + (sleepEnd(r, now) - r.start) / MIN, 0),
+    napN: unionSpans(naps.map((r) => [r.start, sleepEnd(r, now)])).length, napMin: spanMin(unionSpans(naps.map((r) => [r.start, sleepEnd(r, now)]))),
     pee: dia.filter((r) => r.d1 === '소변' || r.d1 === '둘다').length, poo: dia.filter(isPoop).length,
   };
 }
@@ -519,7 +526,7 @@ function viewDay() {
   const key = S.day, today = dkey(Date.now());
   const a = babyAge(key);
   const sm = daySummary(key), ns = nightStats(key);
-  const recs = live().filter((r) => dkey(r.start) === key).reverse();
+  const recs = live().filter((r) => dk(r) === key).reverse();
   const memo = S.memos[key];
   return `<div class="daynav"><button data-act="day" data-d="-1" aria-label="이전 날">‹</button>
     <div class="d">${dayLabel(key)}<small>${a ? `${a.n}일째` : ''}${key === today ? ' · 오늘' : ''}</small></div>
@@ -601,7 +608,7 @@ function compareTable(key) {
   });
   naps.filter((r) => !np.used.has(r.id)).forEach((r) => row('추가 낮잠', '<span class="lbl">-</span>', `${hm(r.start)} · ${minTxt((sleepEnd(r, now) - r.start) / MIN)}`));
   // 수유: 계획 시각과 가장 가까운 실제 수유를 짝지음(±2시간 안). 순서로 맞추면 한 번 빠질 때 전부 밀리기 때문
-  const feeds = live().filter((r) => r.type === 'feed' && dkey(r.start) === key && !(isNightTime(r.start) && minOfDay(r.start) < 12 * 60));
+  const feeds = live().filter((r) => r.type === 'feed' && dk(r) === key && !(isNightTime(r.start) && minOfDay(r.start) < 12 * 60));
   const fp = pairUp(P.feeds, feeds, (p) => p.t, 120);
   const ml = (r) => `${esc(r.value)}ml`;
   P.feeds.forEach((pf, i) => {
@@ -609,10 +616,10 @@ function compareTable(key) {
     row(esc(pf.l), hmM(pf.t), r ? `${hm(r.start)} · ${ml(r)}<br>${diffTxt(minOfDay(r.start) - pf.t)}` : '<span class="lbl">-</span>');
   });
   feeds.filter((r) => !fp.used.has(r.id)).forEach((r) => row('추가 수유', '<span class="lbl">-</span>', `${hm(r.start)} · ${ml(r)}`));
-  const nightFeeds = live().filter((r) => r.type === 'feed' && dkey(r.start) === key && isNightTime(r.start) && minOfDay(r.start) < 12 * 60);
+  const nightFeeds = live().filter((r) => r.type === 'feed' && dk(r) === key && isNightTime(r.start) && minOfDay(r.start) < 12 * 60);
   if (nightFeeds.length) row('새벽 수유', '<span class="lbl">-</span>', nightFeeds.map((r) => `${hm(r.start)} · ${ml(r)}`).join('<br>'));
   if (P.bath != null) {
-    const b = live().find((r) => r.type === 'bath' && dkey(r.start) === key);
+    const b = live().find((r) => r.type === 'bath' && dk(r) === key);
     row('목욕', hmM(P.bath), b ? `${hm(b.start)} · ${diffTxt(minOfDay(b.start) - P.bath)}` : '<span class="lbl">-</span>');
   }
   const ns = nightStats(key);
@@ -624,8 +631,211 @@ function compareTable(key) {
 const hmM = (m) => `${pad(Math.floor(m / 60) % 24)}:${pad(m % 60)}`;
 
 /* 패턴·성장 (2차) */
+/* ---------- 패턴 탭 ---------- */
+const PAT_ITEMS = [['night', '밤잠', 1], ['nap', '낮잠', 1], ['feed', '수유', 1], ['bath', '목욕', 1], ['poo', '대변', 1], ['pee', '소변', 0], ['temp', '체온', 0], ['med', '약', 0], ['walk', '산책', 0]];
+const PAT_COLOR = { night: '#534AB7', nap: '#AFA9EC', feed: '#FAC775', bath: '#5DCAA5', poo: '#BA7517', pee: '#F5C4B3', temp: '#E24B4A', med: '#ED93B1', walk: '#9FE1CB' };
+S.pat = { mode: 'recent', offset: 0, trend: 'feed', period: 14 };
+function patToggles() {
+  const t = LS.get('patToggles', {}) || {};
+  const o = {}; PAT_ITEMS.forEach(([k, , d]) => { o[k] = k in t ? !!t[k] : !!d; });
+  return o;
+}
+/* 화면에 보이는 7일(날짜 키 배열) */
+function patKeys() {
+  const today = dkey(Date.now());
+  if (S.pat.mode === 'week') {
+    const dow = (new Date(dstart(today)).getDay() + 6) % 7;   // 월=0
+    const mon = addDays(today, -dow + 7 * S.pat.offset);
+    return [...Array(7)].map((_, i) => addDays(mon, i));
+  }
+  const end = addDays(today, 7 * S.pat.offset);
+  return [...Array(7)].map((_, i) => addDays(end, i - 6));
+}
+const md = (key) => { const [, m, d] = key.split('-').map(Number); return `${m}/${d}`; };
+const wd = (key) => { const [y, m, d] = key.split('-').map(Number); return WEEK[new Date(y, m - 1, d).getDay()]; };
+const avg = (a) => { const v = a.filter((x) => x != null && !isNaN(x)); return v.length ? v.reduce((s, x) => s + x, 0) / v.length : null; };
+const hasData = (key) => live().some((r) => dk(r) === key && (r.type === 'feed' || r.type === 'sleep'));
+
 function viewPattern() {
-  return `${header()}<div class="card placeholder">패턴 탭은 2차에서 만들어요.<br>주간 패턴, 수유량·통잠·리듬 추이, 목표 vs 실제가 들어갈 자리예요.</div>`;
+  const keys = patKeys(), today = dkey(Date.now());
+  const label = `${md(keys[0])} – ${md(keys[6])}`;
+  const tg = patToggles();
+  return `${header()}
+  <div class="card"><div class="h">주간 패턴<span class="chips" style="gap:5px">
+      <button class="chip ${S.pat.mode === 'recent' ? 'on' : ''}" data-act="patMode" data-m="recent" style="padding:5px 10px;font-size:12px">최근 7일</button>
+      <button class="chip ${S.pat.mode === 'week' ? 'on' : ''}" data-act="patMode" data-m="week" style="padding:5px 10px;font-size:12px">주별</button></span></div>
+    <div class="daynav" style="margin-bottom:4px"><button data-act="patNav" data-d="-1" aria-label="이전">‹</button><div class="d">${label}</div>
+      <button data-act="patNav" data-d="1" aria-label="다음" ${S.pat.offset >= 0 ? 'style="visibility:hidden"' : ''}>›</button></div>
+    <div class="chips" style="gap:5px;margin-bottom:8px">${PAT_ITEMS.map(([k, n]) => `<button class="chip ${tg[k] ? 'on' : ''}" data-act="patToggle" data-k="${k}" style="padding:5px 9px;font-size:12px"><span class="dot" style="background:${PAT_COLOR[k]}"></span>${n}</button>`).join('')}</div>
+    ${weekSvg(keys, tg)}
+    <div class="lbl" style="text-align:center;margin-top:4px">날짜를 누르면 그날 기록으로 이동해요</div></div>
+  <div class="card">${weekTable(keys, today)}</div>
+  <div class="card">${trendCard(today)}</div>
+  <div class="card">${goalCard(today)}</div>`;
+}
+
+function weekSvg(keys, tg) {
+  const L = 24, T = 6, H = 380, W = 340, gap = 4, cw = (W - L - 2 - gap * 6) / 7, now = Date.now();
+  const l = live();
+  let g = '';
+  for (let h = 0; h <= 24; h += 3) g += `<text x="${L - 4}" y="${(T + h / 24 * H + 3).toFixed(1)}" text-anchor="end" font-size="9" fill="#9E99C4">${h}</text>`;
+  keys.forEach((key, i) => {
+    const x = L + i * (cw + gap), a0 = dstart(key), a1 = dstart(addDays(key, 1));
+    const y = (ms) => T + (ms - a0) / (a1 - a0) * H;
+    let col = `<rect x="${x.toFixed(1)}" y="${T}" width="${cw.toFixed(1)}" height="${H}" rx="3" fill="#22203A"/>`;
+    if (now < a1) col += `<rect x="${x.toFixed(1)}" y="${Math.max(T, y(now)).toFixed(1)}" width="${cw.toFixed(1)}" height="${(T + H - Math.max(T, y(now))).toFixed(1)}" fill="#17162A"/>`;
+    sleeps().forEach((r) => {
+      const k = r.kind === '밤' ? 'night' : 'nap';
+      if (!tg[k]) return;
+      const s = Math.max(r.start, a0), e = Math.min(sleepEnd(r, Math.min(now, a1)), a1);
+      if (e > s) col += `<rect x="${x.toFixed(1)}" y="${y(s).toFixed(1)}" width="${cw.toFixed(1)}" height="${Math.max(1, y(e) - y(s)).toFixed(1)}" fill="${PAT_COLOR[k]}"/>`;
+    });
+    l.forEach((r) => {
+      if (r.start < a0 || r.start >= a1) return;
+      const yy = y(r.start);
+      const bar = (c) => `<rect x="${x.toFixed(1)}" y="${(yy - 1.2).toFixed(1)}" width="${cw.toFixed(1)}" height="2.6" fill="${c}"/>`;
+      const dot = (c, dx, rad) => `<circle cx="${(x + cw * dx).toFixed(1)}" cy="${yy.toFixed(1)}" r="${rad}" fill="${c}"/>`;
+      if (r.type === 'feed' && tg.feed) col += bar(PAT_COLOR.feed);
+      else if (r.type === 'bath' && tg.bath) col += bar(PAT_COLOR.bath);
+      else if (r.type === 'diaper') {
+        if (isPoop(r) && tg.poo) col += dot(PAT_COLOR.poo, 0.5, 4);
+        if ((r.d1 === '소변' || r.d1 === '둘다') && tg.pee) col += dot(PAT_COLOR.pee, 0.22, 2.4);
+      } else if (r.type === 'temp' && tg.temp) col += dot(PAT_COLOR.temp, 0.78, 3);
+      else if (r.type === 'med' && tg.med) col += dot(PAT_COLOR.med, 0.78, 3);
+      else if (r.type === 'walk' && tg.walk) col += dot(PAT_COLOR.walk, 0.22, 3);
+    });
+    const isToday = key === dkey(now);
+    col += `<text x="${(x + cw / 2).toFixed(1)}" y="${T + H + 13}" text-anchor="middle" font-size="10" fill="${isToday ? '#ECEAF6' : '#9E99C4'}" font-weight="${isToday ? 600 : 400}">${md(key)}</text>
+      <text x="${(x + cw / 2).toFixed(1)}" y="${T + H + 25}" text-anchor="middle" font-size="9" fill="${wd(key) === '일' ? '#F09595' : '#9E99C4'}">${wd(key)}</text>
+      <rect x="${x.toFixed(1)}" y="0" width="${cw.toFixed(1)}" height="${T + H + 28}" fill="transparent"/>`;
+    g += `<g data-act="patDay" data-d="${key}" style="cursor:pointer">${col}</g>`;
+  });
+  return `<svg viewBox="0 0 ${W} ${T + H + 30}" width="100%" role="img" aria-label="주간 패턴">${g}</svg>`;
+}
+
+function weekTable(keys, today) {
+  const rows = keys.map((key) => {
+    const sm = daySummary(key), ns = nightStats(key), any = hasData(key);
+    return { key, any, sm, ns, done: key < today };
+  });
+  const cell = (ok, v) => (ok ? v : '<span class="lbl">-</span>');
+  const body = rows.map((r) => `<button class="trow" data-act="patDay" data-d="${r.key}">
+      <span>${md(r.key)} <span class="lbl">(${wd(r.key)})</span>${r.key === today ? ' <span class="lbl">진행 중</span>' : ''}</span>
+      <span class="c-feed">${cell(r.sm.feedN, `${r.sm.feedN}회 · ${r.sm.feedMl}`)}</span>
+      <span class="c-nap">${cell(r.sm.napN, `${r.sm.napN}회 · ${minShort(r.sm.napMin)}`)}</span>
+      <span class="c-night">${cell(r.ns.tot, `${minShort(r.ns.tot)} <span class="lbl">(${minShort(r.ns.longest)})</span>`)}</span></button>`).join('');
+  // 평균: 기록이 있는 지난 날만(오늘은 진행 중이라 제외)
+  const done = rows.filter((r) => r.done && r.any);
+  const a = (f) => avg(done.map(f));
+  const fN = a((r) => r.sm.feedN || null), fM = a((r) => r.sm.feedMl || null), nN = a((r) => (r.sm.napN ? r.sm.napN : null)), nM = a((r) => (r.sm.napN ? r.sm.napMin : null));
+  const tN = a((r) => r.ns.tot || null), lN = a((r) => r.ns.tot ? r.ns.longest : null);
+  const f1 = (v) => (v == null ? '-' : (Math.round(v * 10) / 10).toString());
+  return `<div class="h">7일 비교<span class="lbl">밤잠은 (최장 연속)</span></div>
+    <div class="ttable"><div class="thead"><span>날짜</span><span>수유</span><span>낮잠</span><span>밤잠</span></div>${body}
+    <div class="tavg"><span>평균 <span class="lbl">${done.length}일</span></span><span class="c-feed">${fM == null ? '-' : `${f1(fN)}회 · ${Math.round(fM)}`}</span>
+      <span class="c-nap">${nM == null ? '-' : `${f1(nN)}회 · ${minShort(nM)}`}</span><span class="c-night">${tN == null ? '-' : `${minShort(tN)} <span class="lbl">(${minShort(lN)})</span>`}</span></div></div>`;
+}
+
+/* 추이: 오늘은 진행 중이라 어제까지 */
+function trendData(today) {
+  const n = S.pat.period;
+  const keys = [...Array(n)].map((_, i) => addDays(today, i - n));
+  const firstDayFeed = (key) => live().find((r) => r.type === 'feed' && dk(r) === key && !(isNightTime(r.start) && minOfDay(r.start) < 12 * 60));
+  return keys.map((key) => {
+    const sm = daySummary(key), ns = nightStats(key), mw = morningWake(key), ff = firstDayFeed(key);
+    const bed = sleeps().find((r) => r.kind === '밤' && nightOf(r) === key);
+    const bm = bed ? minOfDay(bed.start) + (minOfDay(bed.start) < 12 * 60 ? 1440 : 0) : null;
+    return {
+      key, feedMl: sm.feedN ? sm.feedMl : null, feedAvg: sm.feedN ? sm.feedMl / sm.feedN : null,
+      nightTot: ns.tot ? ns.tot / 60 : null, longest: ns.tot ? ns.longest / 60 : null,
+      wake: mw ? minOfDay(mw) / 60 : null, first: ff ? minOfDay(ff.start) / 60 : null, bed: bm != null ? bm / 60 : null,
+    };
+  });
+}
+function trendCard(today) {
+  const d = trendData(today), t = S.pat.trend;
+  const per = [[7, '1주'], [14, '2주'], [30, '1달']].map(([n, l]) => `<button class="chip ${S.pat.period === n ? 'on' : ''}" data-act="patPeriod" data-n="${n}" style="padding:5px 10px;font-size:12px">${l}</button>`).join('');
+  const seg = [['feed', '수유'], ['sleep', '통잠'], ['rhythm', '리듬']].map(([k, l]) => `<button class="seg-b ${t === k ? 'on' : ''}" data-act="patTrend" data-t="${k}">${l}</button>`).join('');
+  const hhmm = (h) => `${pad(Math.floor(h) % 24)}:${pad(Math.round((h % 1) * 60) % 60)}`;
+  const dur = (h) => minShort(h * 60);
+  let series, fmt, summary, step;
+  if (t === 'feed') {
+    series = [{ v: d.map((x) => x.feedMl), c: PAT_COLOR.feed, n: '하루 총량' }];
+    fmt = (v) => `${Math.round(v)}`; step = 50;
+    const a = avg(d.map((x) => x.feedMl)), b = avg(d.map((x) => x.feedAvg));
+    summary = a == null ? '' : `하루 평균 <b>${Math.round(a)}ml</b> · 1회 평균 <b>${Math.round(b)}ml</b>`;
+  } else if (t === 'sleep') {
+    series = [{ v: d.map((x) => x.nightTot), c: PAT_COLOR.night, n: '밤잠 총량' }, { v: d.map((x) => x.longest), c: '#8F87E6', n: '최장 연속' }];
+    fmt = dur; step = 1;
+    const a = avg(d.map((x) => x.nightTot)), b = avg(d.map((x) => x.longest));
+    summary = a == null ? '' : `평균 밤잠 <b>${dur(a)}</b> · 평균 최장 <b>${dur(b)}</b>`;
+  } else {
+    series = [{ v: d.map((x) => x.wake), c: PAT_COLOR.walk, n: '기상' }, { v: d.map((x) => x.first), c: PAT_COLOR.feed, n: '첫 수유' }, { v: d.map((x) => x.bed), c: PAT_COLOR.nap, n: '밤잠 시작' }];
+    fmt = hhmm; step = 1;
+    const w = avg(d.map((x) => x.wake)), f = avg(d.map((x) => x.first)), b = avg(d.map((x) => x.bed));
+    summary = w == null && b == null ? '' : `평균 기상 <b>${w == null ? '-' : hhmm(w)}</b> · 첫 수유 <b>${f == null ? '-' : hhmm(f)}</b> · 밤잠 <b>${b == null ? '-' : hhmm(b)}</b>`;
+  }
+  const legend = series.map((s) => `<span><i style="background:${s.c};height:3px"></i>${s.n}</span>`).join('');
+  return `<div class="h">추이<span class="chips" style="gap:5px">${per}</span></div>
+    <div class="seg">${seg}</div>
+    ${lineSvg(d.map((x) => x.key), series, fmt, step)}
+    <div class="legend" style="margin-top:2px">${legend}</div>
+    <div class="lbl" style="text-align:center;margin-top:6px">${summary || '아직 기록이 부족해요'}</div>`;
+}
+function lineSvg(keys, series, fmt, step) {
+  const W = 320, H = 170, L = 38, R = 8, T = 8, B = 18, iw = W - L - R, ih = H - T - B;
+  const all = series.flatMap((s) => s.v).filter((v) => v != null);
+  if (!all.length) return `<div class="empty">이 기간에 기록이 없어요</div>`;
+  let lo = Math.min(...all), hi = Math.max(...all);
+  const padv = (hi - lo) * 0.15 || Math.max(1, Math.abs(hi) * 0.1);
+  lo -= padv; hi += padv;
+  if (step) { lo = Math.floor(lo / step) * step; hi = Math.ceil(hi / step) * step; if (hi - lo < 2 * step) hi = lo + 2 * step; }
+  const x = (i) => L + (keys.length === 1 ? iw / 2 : (i / (keys.length - 1)) * iw), y = (v) => T + ih - ((v - lo) / (hi - lo)) * ih;
+  let g = '';
+  [0, 0.5, 1].forEach((f) => { const v = lo + (hi - lo) * f; g += `<line x1="${L}" x2="${W - R}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}" stroke="#34314F" stroke-width="0.6"/><text x="${L - 4}" y="${(y(v) + 3).toFixed(1)}" text-anchor="end" font-size="9" fill="#9E99C4">${fmt(v)}</text>`; });
+  [0, Math.floor((keys.length - 1) / 2), keys.length - 1].forEach((i) => { g += `<text x="${x(i).toFixed(1)}" y="${H - 4}" text-anchor="middle" font-size="9" fill="#9E99C4">${md(keys[i])}</text>`; });
+  series.forEach((s) => {
+    let seg = [];
+    const flushSeg = () => { if (seg.length > 1) g += `<polyline points="${seg.join(' ')}" fill="none" stroke="${s.c}" stroke-width="2" stroke-linejoin="round"/>`; seg = []; };
+    s.v.forEach((v, i) => { if (v == null) { flushSeg(); return; } seg.push(`${x(i).toFixed(1)},${y(v).toFixed(1)}`); g += `<circle cx="${x(i).toFixed(1)}" cy="${y(v).toFixed(1)}" r="2.2" fill="${s.c}"/>`; });
+    flushSeg();
+  });
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="추이 그래프">${g}</svg>`;
+}
+
+/* 목표 vs 실제: 어제까지 7일, 날마다 그날 일정표로 비교 후 평균 */
+function goalCard(today) {
+  const keys = [...Array(7)].map((_, i) => addDays(today, i - 7));
+  const acc = {}; const push = (k, a, t) => { if (a == null || t == null) return; (acc[k] = acc[k] || { a: [], t: [] }); acc[k].a.push(a); acc[k].t.push(t); };
+  let days = 0;
+  keys.forEach((key) => {
+    if (!hasData(key)) return;
+    days++;
+    const P = planFor(key), mw = morningWake(key);
+    const naps = dayNaps(key).filter((r) => r.end);
+    const bed = sleeps().find((r) => r.kind === '밤' && nightOf(r) === key);
+    let prev = mw;
+    naps.forEach((r, i) => { if (prev && r.start > prev) push(`ww${i + 1}`, (r.start - prev) / MIN, P.ww[i] != null && i < P.naps.length ? P.ww[i] : null); prev = r.end; });
+    if (prev && bed && bed.start > prev) push('wwLast', (bed.start - prev) / MIN, P.ww[P.ww.length - 1]);
+    const feeds = live().filter((r) => r.type === 'feed' && dk(r) === key && !(isNightTime(r.start) && minOfDay(r.start) < 12 * 60));
+    for (let i = 1; i < feeds.length; i++) push('feed', (feeds[i].start - feeds[i - 1].start) / MIN, P.interval);
+    if (bed) push('bed', minOfDay(bed.start) + (minOfDay(bed.start) < 12 * 60 ? 1440 : 0), P.bed);
+    if (naps.length) push('nap', naps.reduce((s, r) => s + (r.end - r.start) / MIN, 0), P.naps.reduce((s, n) => s + (n.e - n.s), 0));
+  });
+  if (!days) return `<div class="h">목표 vs 실제<span class="lbl">최근 7일</span></div><div class="empty">지난 7일 기록이 쌓이면 보여드려요</div>`;
+  const order = Object.keys(acc).filter((k) => /^ww\d/.test(k)).sort((a, b) => Number(a.slice(2)) - Number(b.slice(2)));
+  const names = { feed: '수유 간격', bed: '밤잠 시작', nap: '낮잠 총량', wwLast: '마지막 깨시' };
+  const rows = [...order, 'wwLast', 'feed', 'bed', 'nap'].filter((k) => acc[k]).map((k) => {
+    const a = avg(acc[k].a), t = avg(acc[k].t), dlt = a - t;
+    const show = k === 'bed' ? hmM(Math.round(t) % 1440) : minShort(t);
+    const act = k === 'bed' ? hmM(Math.round(a) % 1440) : minShort(a);
+    const ad = Math.abs(Math.round(dlt));
+    const dTxt = ad <= 10 ? `<span class="c-ok">${ad ? (dlt > 0 ? '+' : '-') + ad + '분' : '같음'}</span>` : `<span class="c-over">${dlt > 0 ? '+' : '-'}${minTxt(ad)}</span>`;
+    return `<div class="k">${k.startsWith('ww') && k !== 'wwLast' ? `깨시 ${k.slice(2)}` : names[k]}</div><div class="p">${show}</div><div class="a">${act}</div><div class="a">${dTxt}</div>`;
+  }).join('');
+  return `<div class="h">목표 vs 실제<span class="lbl">최근 7일 · ${days}일 기준</span></div>
+    <div class="cmp" style="grid-template-columns:auto 1fr auto auto"><div class="hd">항목</div><div class="hd">목표</div><div class="hd a">실제</div><div class="hd a">차이</div>${rows}</div>
+    <div class="lbl" style="margin-top:6px">목표는 날마다 그날 적용된 일정표 기준이에요 · 10분 넘게 차이 나면 주황</div>`;
 }
 function viewGrowth() {
   const b = set('birthDate');
@@ -934,6 +1144,17 @@ const ACTIONS = {
   loadLog: busy(async () => { try { const j = await call('getLog', {}); S.logLines = j.data.log; render(); } catch (e) { note('불러오지 못했어요'); } }),
   resync() { note('새로 불러오는 중…'); sync(true); },
   changePin() { pinSheet(false); },
+  patMode(el) { if (S.pat.mode === el.dataset.m) return; S.pat.mode = el.dataset.m; S.pat.offset = 0; render(); },
+  patNav(el) {
+    const n = S.pat.offset + Number(el.dataset.d);
+    if (n > 0) return;
+    S.pat.offset = n; render();
+    ensureRange(patKeys()[0]);
+  },
+  patToggle(el) { const t = patToggles(); t[el.dataset.k] = !t[el.dataset.k]; LS.set('patToggles', t); render(); },
+  patDay(el) { S.day = el.dataset.d; S.tab = 'day'; closeToast(); render(); window.scrollTo(0, 0); ensureRange(S.day); },
+  patPeriod(el) { S.pat.period = Number(el.dataset.n); render(); ensureRange(addDays(dkey(Date.now()), -S.pat.period - 7)); },
+  patTrend(el) { S.pat.trend = el.dataset.t; render(); },
   addPast() {
     const types = ['feed', 'sleep', 'diaper', 'bath', 'temp', 'med', 'walk', 'memo'].concat(set('showFood') === 'true' ? ['food'] : []);
     const now = Date.now();

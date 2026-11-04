@@ -190,3 +190,15 @@ svg { display: block; }
 .loadbar { width: 40%; background: var(--nap); animation: loading 1s ease-in-out infinite alternate; }
 @keyframes loading { from { margin-left: 0; } to { margin-left: 60%; } }
 .keys button:active { background: var(--card2); }
+
+/* 패턴 탭 */
+.ttable { font-size: 13px; }
+.ttable .thead, .ttable .trow, .ttable .tavg { display: grid; grid-template-columns: 1.15fr 1fr 1fr 1.15fr; gap: 4px; align-items: center; padding: 7px 0; border-bottom: 1px solid var(--line); width: 100%; text-align: left; }
+.ttable .thead { color: var(--muted); font-size: 11px; padding-top: 0; }
+.ttable .trow:active { background: var(--card2); }
+.ttable .tavg { border-bottom: 0; font-weight: 600; }
+.ttable span { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.seg { display: flex; gap: 6px; margin-bottom: 8px; }
+.seg-b { flex: 1; padding: 8px 0; border-radius: 10px; background: var(--bg); color: var(--sub); font-size: 13px; }
+.seg-b.on { background: #3C3489; color: var(--text); font-weight: 600; }
+.h .chips { flex-wrap: nowrap; }

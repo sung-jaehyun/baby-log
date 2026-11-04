@@ -148,10 +148,40 @@ async def main():
           [[8.8,9.7,'낮'],[11.6,13.1,'낮'],[14.9,15.5,'낮'],[17.2,17.8,'낮'],[20.6,29.3,'밤']].forEach(([a,z,k],i)=>{ S.recs['p'+d+'s'+i]={id:'p'+d+'s'+i,type:'sleep',start:t+a*3600000,end:t+z*3600000,kind:k,by:'아내',deleted:false}; });
           for(let i=0;i<7;i++) S.recs['p'+d+'d'+i]={id:'p'+d+'d'+i,type:'diaper',start:t+(7+i*2)*3600000,d1:'소변',by:'장모님',deleted:false}; }
           dirty(); render(); }""")
+        print('[패턴 탭]')
+        await pg.click('[data-act="tab"][data-tab="pattern"]'); await pg.wait_for_timeout(200)
+        check('7일 비교표 7줄 + 평균', await pg.locator('.ttable .trow').count() == 7 and await pg.locator('.ttable .tavg').count() == 1)
+        avg_txt = await pg.inner_text('.ttable .tavg')
+        check('평균에서 오늘(진행 중) 제외', '6일' in avg_txt, avg_txt)
+        k0 = await pg.evaluate('patKeys()[6]')
+        await pg.click('[data-act="patNav"][data-d="-1"]')
+        check('‹ 누르면 7일 전으로', await pg.evaluate('patKeys()[6]') == await pg.evaluate(f"addDays('{k0}', -7)"))
+        await pg.click('[data-act="patMode"][data-m="week"]')
+        check('주별은 월요일 시작', await pg.evaluate("wd(patKeys()[0])") == '월')
+        await pg.click('[data-act="patMode"][data-m="recent"]')
+        await pg.click('[data-act="patToggle"][data-k="pee"]')
+        check('항목 켜기·끄기는 기기에 저장', (await pg.evaluate("JSON.parse(localStorage.patToggles)")).get('pee') is True)
+        await pg.click('[data-act="patToggle"][data-k="pee"]')
+        # 겹친 잠은 한 번만 센다
+        ov = await pg.evaluate("""()=>{ const k=addDays(dkey(Date.now()),-60); const a=at(k,'20:00'); const before=nightStats(k).tot;
+            S.recs['ovA']={id:'ovA',type:'sleep',start:a,end:a+3600000,kind:'밤',by:'재현',deleted:false};
+            S.recs['ovB']={id:'ovB',type:'sleep',start:a+1800000,end:a+5400000,kind:'밤',by:'아내',deleted:false}; dirty();
+            const t=nightStats(k).tot; delete S.recs.ovA; delete S.recs.ovB; dirty(); return [before,t]; }""")
+        check('겹친 잠 두 개는 합친 시간만(90분)', ov[0] == 0 and round(ov[1]) == 90, ov)
+        first_key = await pg.evaluate('patKeys()[2]')
+        await pg.click(f'g[data-act="patDay"][data-d="{first_key}"]')
+        check('주간 차트 날짜 누르면 그날 하루 탭', await pg.evaluate('S.tab') == 'day' and await pg.evaluate('S.day') == first_key)
+        await pg.click('[data-act="tab"][data-tab="pattern"]')
+        for t in ['sleep', 'rhythm', 'feed']:
+            await pg.click(f'[data-act="patTrend"][data-t="{t}"]')
+        check('추이 그래프 전환', await pg.query_selector('svg[aria-label="추이 그래프"]') is not None)
+        check('목표 vs 실제 표시', '수유 간격' in await pg.inner_text('body'))
+
         cdp = await ctx.new_cdp_session(pg)
         await cdp.send('Emulation.setCPUThrottlingRate', {'rate': 6})
         await pg.click('[data-act="tab"][data-tab="home"]'); await pg.wait_for_timeout(300)
-        for label, sel, limit in [('하루 탭', '[data-tab="day"]', 200), ('홈 탭', '[data-act="tab"][data-tab="home"]', 200),
+        for label, sel, limit in [('하루 탭', '[data-tab="day"]', 200), ('패턴 탭', '[data-act="tab"][data-tab="pattern"]', 250),
+                                  ('패턴 ‹ 이동', '[data-act="patNav"][data-d="-1"]', 250), ('홈 탭', '[data-act="tab"][data-tab="home"]', 200),
                                   ('분유 창', '[data-act="feed"]', 200)]:
             ms = await tap_ms(pg, sel)
             check(f'{label} {ms:.0f}ms (기준 {limit}ms)', ms < limit, f'{ms:.0f}ms')
