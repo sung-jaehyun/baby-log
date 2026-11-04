@@ -64,6 +64,43 @@ async def main():
         k2 = await pg.evaluate("""()=>{ const d=new Date(); d.setHours(17,10,0,0); const s=d.getTime(); return sleepKind(s, s+40*60000); }""")
         check('17:10~17:50 → 낮잠', k2 == '낮', k2)
 
+        # 깸 취소하면 낮/밤 구분도 원래대로
+        await pg.evaluate("""()=>{ const n=Date.now(); addRec({type:'sleep',start:n-3*3600000,kind:'밤'}); }""")
+        await pg.evaluate("""()=>{ const s=sleeps().filter(r=>!r.end)[0]; s.start=Date.now()-30*60000; s.kind='밤'; dirty(); render(); }""")
+        await pg.click('[data-act="sleep"]'); await pg.click('#toast [data-t="undo"]')
+        st = await pg.evaluate("(()=>{const s=sleeps().filter(r=>!r.end)[0]; return s ? s.kind : null})()")
+        check('깸 취소 → 다시 자는 중, 구분 원래대로', st == '밤', st)
+        await pg.click('[data-act="sleep"]'); await settle(pg)
+
+        print('[두 기기]')
+        pg2 = await ctx.new_page()
+        # 두 번째 휴대폰 흉내: 데모 서버(demoDB)만 같이 쓰고, 나머지 저장공간은 따로
+        await pg2.add_init_script("""(()=>{ const P='p2:'; const g=Storage.prototype.getItem, s=Storage.prototype.setItem, r=Storage.prototype.removeItem;
+          const k=(x)=> x==='demoDB' ? x : P+x;
+          Storage.prototype.getItem=function(x){return g.call(this,k(x))}; Storage.prototype.setItem=function(x,v){return s.call(this,k(x),v)};
+          Storage.prototype.removeItem=function(x){return r.call(this,k(x))}; })();""")
+        await pg2.goto(BASE + '#s=demo')
+        await login(pg2, '2222')
+        await pg.click('[data-act="quick"][data-type="bath"]'); await settle(pg)
+        await pg2.evaluate('sync()'); await pg2.wait_for_timeout(700)
+        await pg2.click('[data-act="quick"][data-type="bath"]'); await pg2.wait_for_timeout(200)
+        asked = await pg2.query_selector('.sheet [data-r="1"]') is not None
+        check('다른 기기 기록이 동기화되고, 10분 안 중복이면 확인 창', asked)
+        if asked: await pg2.click('.sheet [data-r="0"]')
+        # 늦게 도착한 옛 동기화 응답이 방금 누른 '깸'을 되돌리지 않는지
+        await pg.click('[data-act="sleep"]')
+        await pg.evaluate("updateRec(openSleep().id, {start: Date.now()-30*60000})")   # 잠든 지 1분 안 깸은 막으므로 30분 전으로
+        await settle(pg)
+        await pg.evaluate("""()=>{ const o=DEMO.call; DEMO.call=async(a,d,p)=>{ if(a==='sync'||a==='load'){ const r=await o(a,d,p); await new Promise(z=>setTimeout(z,1500)); return r; } return o(a,d,p); }; window._restore=()=>{DEMO.call=o}; }""")
+        await pg.evaluate("S.rev=0; lastSync=0; sync()")
+        await pg.wait_for_timeout(200)
+        open_id = await pg.evaluate("openSleep().id")
+        await pg.click('[data-act="sleep"]'); await pg.evaluate('flush()')
+        await pg.wait_for_timeout(2500)
+        check('동기화 중 누른 깸이 되돌아가지 않음', await pg.evaluate("(id)=>!!S.recs[id].end", open_id))
+        await pg.evaluate('_restore()')
+        await pg2.close()
+
         print('[오프라인·오류]')
         await pg.evaluate("""()=>{ window._real=DEMO.call; DEMO.call=async()=>{throw new Error('offline')}; }""")
         await pg.click('[data-act="quick"][data-type="walk"]')
@@ -96,13 +133,21 @@ async def main():
         check('지난 날짜에 기록 추가', ok)
         await pg.click('[data-act="addPast"]'); await pg.click('.sheet [data-t="sleep"]')
         await pg.fill('#es', await pg.evaluate("toLocalInput(at(S.day,'09:00'))")); await pg.fill('#ee', await pg.evaluate("toLocalInput(at(S.day,'09:30'))")); await pg.click('#save')
-        check('기존 잠과 겹치는 잠은 막음', await pg.query_selector('.sheet') is not None)
+        n_sleep = await pg.evaluate("sleeps().length")
+        note_txt = await pg.evaluate("($('#note')||{}).textContent||''")
+        check('기존 잠과 겹치는 잠은 막음(안내 + 추가 안 됨)', await pg.query_selector('.sheet') is not None and '겹쳐요' in note_txt
+              and await pg.evaluate("sleeps().length") == n_sleep, note_txt)
         await pg.click('#cancel')
         cmp = await pg.inner_text('.cmp')
         check('계획 대비 표 표시', '낮잠1' in cmp and '밤잠 시작' in cmp)
         await settle(pg)
 
-        print('[반응 속도] (휴대폰 저사양 수준으로 CPU 6배 느리게)')
+        print('[반응 속도] (45일치 기록 + 휴대폰 저사양 수준으로 CPU 6배 느리게)')
+        await pg.evaluate("""()=>{ const day=86400000, now=Date.now(); for(let d=4; d<45; d++){ const b=new Date(now-d*day); b.setHours(0,0,0,0); const t=b.getTime();
+          [[7.4,150],[10.4,170],[13.4,170],[16.5,150],[19.4,200],[5.6,105]].forEach(([h,v],i)=>{ S.recs['p'+d+'f'+i]={id:'p'+d+'f'+i,type:'feed',start:t+h*3600000,value:v,by:'재현',deleted:false}; });
+          [[8.8,9.7,'낮'],[11.6,13.1,'낮'],[14.9,15.5,'낮'],[17.2,17.8,'낮'],[20.6,29.3,'밤']].forEach(([a,z,k],i)=>{ S.recs['p'+d+'s'+i]={id:'p'+d+'s'+i,type:'sleep',start:t+a*3600000,end:t+z*3600000,kind:k,by:'아내',deleted:false}; });
+          for(let i=0;i<7;i++) S.recs['p'+d+'d'+i]={id:'p'+d+'d'+i,type:'diaper',start:t+(7+i*2)*3600000,d1:'소변',by:'장모님',deleted:false}; }
+          dirty(); render(); }""")
         cdp = await ctx.new_cdp_session(pg)
         await cdp.send('Emulation.setCPUThrottlingRate', {'rate': 6})
         await pg.click('[data-act="tab"][data-tab="home"]'); await pg.wait_for_timeout(300)
@@ -112,6 +157,11 @@ async def main():
             check(f'{label} {ms:.0f}ms (기준 {limit}ms)', ms < limit, f'{ms:.0f}ms')
             if await pg.query_selector('#dim'): await pg.evaluate('closeSheet()')
             await pg.wait_for_timeout(200)
+        # 뒤에서 다시 그리기가 일어나는 순간에 누른 버튼도 동작하는지
+        await pg.evaluate("setTimeout(()=>bgRender(), 30)")
+        await pg.click('[data-act="feed"]'); await pg.wait_for_timeout(500)
+        check('뒤에서 화면 갱신 중 누른 버튼도 동작', await pg.query_selector('.sheet') is not None)
+        await pg.evaluate('closeSheet()')
         await cdp.send('Emulation.setCPUThrottlingRate', {'rate': 1})
 
         check('화면 오류 없음', not errs, errs)

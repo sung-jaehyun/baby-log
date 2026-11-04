@@ -54,11 +54,16 @@ function loadCache() {
 let cacheTimer = 0;
 function saveCache() {
   clearTimeout(cacheTimer);
+  // 휴대폰이 한가할 때 저장(누르는 순간 버벅이지 않게). 앱이 가려질 때는 바로 저장
   cacheTimer = setTimeout(() => {
-    const cut = Date.now() - 60 * DAY;
-    LS.set('cache', { settings: S.settings, plans: S.plans, apply: S.apply, users: S.users, memos: S.memos, serverTime: S.serverTime,
-      loadedFrom: Math.max(S.loadedFrom, cut), recs: Object.values(S.recs).filter((r) => r.start >= cut) });
-  }, 300);
+    if (window.requestIdleCallback) requestIdleCallback(writeCache, { timeout: 2000 }); else writeCache();
+  }, 600);
+}
+function writeCache() {
+  clearTimeout(cacheTimer);
+  const cut = Date.now() - 60 * DAY;
+  LS.set('cache', { settings: S.settings, plans: S.plans, apply: S.apply, users: S.users, memos: S.memos, serverTime: S.serverTime,
+    loadedFrom: Math.max(S.loadedFrom, cut), recs: Object.values(S.recs).filter((r) => r.start >= cut) });
 }
 function dirty() { S._sorted = null; S._sleeps = null; }
 function live() {
@@ -136,7 +141,7 @@ async function sync(full) {
     S.serverTime = j.now; S.rev = j.rev;
     if (j.user && j.user !== S.auth.user) { S.auth.user = j.user; LS.set('auth', S.auth); }
     saveCache();
-    render();
+    bgRender();
   } catch (e) {
     if (isAuthErr(e)) authFailed(e.code === 'locked' ? e.message : null);
   } finally { syncing = false; }
@@ -216,7 +221,7 @@ async function flush() {
       if (again) { scheduleFlush(8000); break; }
     }
     saveCache();
-    if (S.tab === 'home' || S.tab === 'settings') render();
+    if (S.tab === 'home' || S.tab === 'settings') bgRender();
   })();
   try { await flushing; } finally { flushing = null; }
 }
@@ -399,13 +404,29 @@ let renderPending = false;
 const typing = () => { const a = document.activeElement; return !!(a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName) && a.closest('#app')); };
 // 입력을 마친 직후 누른 버튼이 사라지지 않도록, 미뤄둔 다시 그리기는 잠깐 기다렸다 실행
 document.addEventListener('focusout', () => setTimeout(() => { if (renderPending && !typing()) render(); }, 350));
+/* 손가락이 화면에 닿아 있거나 막 뗀 직후에는 '뒤에서 하는 다시 그리기'를 미룬다.
+   (누르는 도중 버튼이 바뀌면 그 터치가 무시되기 때문) 직접 누른 동작의 화면 변경은 그대로 즉시 반영 */
+let fingerDown = false, fingerUpAt = 0, bgTimer = 0;
+document.addEventListener('pointerdown', () => { fingerDown = true; }, { passive: true, capture: true });
+const fingerUp = () => { fingerDown = false; fingerUpAt = Date.now(); };
+document.addEventListener('pointerup', fingerUp, { passive: true, capture: true });
+document.addEventListener('pointercancel', fingerUp, { passive: true, capture: true });
+function bgRender() {
+  clearTimeout(bgTimer);
+  if (fingerDown || Date.now() - fingerUpAt < 400 || $('#toast')) { bgTimer = setTimeout(bgRender, 400); return; }
+  render();
+}
 function render(force) {
   if (!force && S.auth && typing()) { renderPending = true; return; }
   renderPending = false;
+  clearTimeout(bgTimer);
   const root = $('#app');
   if (!S.auth) { root.innerHTML = viewLogin(); $('#tabs').innerHTML = ''; warmServer(); return; }
   const v = { home: viewHome, day: viewDay, pattern: viewPattern, growth: viewGrowth, settings: viewSettings }[S.tab] || viewHome;
+  const same = S.tab === S._lastTab, y = window.scrollY;
   root.innerHTML = v();
+  if (same && y) window.scrollTo(0, y);   // 같은 화면을 새로 그릴 때 스크롤 위치 유지
+  S._lastTab = S.tab;
   renderTabs();
 }
 function renderTabs() {
@@ -693,7 +714,7 @@ function viewLogin() {
 /* PIN을 누르는 동안 서버를 미리 깨워 둔다(구글 서버는 처음 요청에 2~4초 걸리므로) */
 let warmedAt = 0;
 function warmServer() {
-  const url = API_URL || LS.get('lastUrl', '');
+  const url = (S.auth && S.auth.url) || API_URL || LS.get('lastUrl', '');
   if (!/^https:\/\//.test(url) || Date.now() - warmedAt < 60000) return;
   warmedAt = Date.now();
   fetch(url, { mode: 'no-cors', cache: 'no-store' }).catch(() => {});
@@ -924,7 +945,7 @@ const ACTIONS = {
         const t = b.dataset.t;
         const draft = { type: t, start };
         if (t === 'sleep') draft.end = Math.min(start + 60 * MIN, now);
-        if (t === 'feed') { const lf = lastOf('feed'); draft.value = lf ? Number(lf.value) : 150; }
+        if (t === 'feed') { const lf = lastOf('feed'); draft.value = (lf && Number(lf.value)) || 150; }
         if (t === 'diaper') draft.d1 = '소변';
         if (t === 'temp') draft.value = 36.8;
         if (t === 'food') draft.d3 = '없음';
@@ -1108,7 +1129,7 @@ function editSheet(arg) {
   const T = TYPES[r.type] || { n: r.type, i: 'memo' };
   let body = `<div class="field"><label>${r.type === 'sleep' ? '잠든 시각' : '시각'}</label><input type="datetime-local" id="es" value="${toLocalInput(r.start)}"></div>`;
   if (r.type === 'sleep') body += `<div class="field"><label>깬 시각 (비우면 자는 중)</label><input type="datetime-local" id="ee" value="${toLocalInput(r.end)}"></div>
-    <div class="field"><label>구분</label><select id="ek">${isNew ? '<option value="">자동</option>' : ''}<option ${r.kind === '낮' ? 'selected' : ''}>낮</option><option ${r.kind === '밤' ? 'selected' : ''}>밤</option></select></div>`;
+    <div class="field"><label>구분 <span class="lbl">(시각을 바꾸면 자동으로 다시 판단)</span></label><select id="ek"><option value="">자동</option><option ${!isNew && r.kind === '낮' ? 'selected' : ''}>낮</option><option ${!isNew && r.kind === '밤' ? 'selected' : ''}>밤</option></select></div>`;
   if (r.type === 'feed') body += `<div class="field"><label>양 (ml)</label><input type="number" inputmode="numeric" id="ev" value="${esc(r.value)}"></div>`;
   if (r.type === 'temp') body += `<div class="field"><label>체온 (℃)</label><input type="number" step="0.1" inputmode="decimal" id="ev" value="${esc(r.value)}"></div>`;
   if (r.type === 'diaper') body += `<div class="field"><label>종류</label><select id="e1">${['소변', '대변', '둘다'].map((k) => `<option ${r.d1 === k ? 'selected' : ''}>${k}</option>`).join('')}</select></div>
@@ -1121,6 +1142,7 @@ function editSheet(arg) {
   body += `<div class="field"><label>${r.type === 'memo' ? '내용' : '메모'}</label><textarea id="em" rows="2" maxlength="300">${esc(r.memo)}</textarea></div>`;
   openSheet(`<h3>${ART.icons[T.i]}${T.n} ${isNew ? '기록 추가' : '기록 수정'}</h3>${body}${isNew ? '' : `<div class="lbl">기록: ${esc(r.by)}</div>`}
     <button class="primary" id="save">${isNew ? '추가' : '저장'}</button>${isNew ? '<button class="ghost" id="cancel">닫기</button>' : '<button class="ghost danger" id="del">삭제</button>'}`, (el) => {
+    el.addEventListener('change', (e) => { if ((e.target.id === 'es' || e.target.id === 'ee') && $('#ek')) $('#ek').value = ''; });
     el.addEventListener('click', async (e) => {
       const b = e.target.closest('button'); if (!b) return;
       if (b.id === 'cancel') { closeSheet(); return; }
@@ -1135,9 +1157,16 @@ function editSheet(arg) {
         if (patch.end && patch.end > Date.now() + 5 * MIN) { note('깬 시각이 미래예요'); return; }
         if (!patch.end && openSleep() && openSleep().id !== id) { note('이미 자는 중인 기록이 있어요'); return; }
         patch.kind = $('#ek').value || (patch.end ? sleepKind(patch.start, patch.end) : (isNightTime(patch.start) ? '밤' : '낮'));
-        const s2 = patch.start, e2 = patch.end || Date.now();
-        const clash = sleeps().find((x) => x.id !== id && x.start < e2 && (x.end || Date.now()) > s2);
-        if (clash) { note(`${hm(clash.start)} 잠 기록과 시간이 겹쳐요`); return; }
+        // 겹침 검사는 시각을 새로 넣거나 바꿀 때만. 수정은 알려주고 고를 수 있게(메모만 고칠 때 막히지 않게)
+        const timesChanged = isNew || patch.start !== r.start || patch.end !== r.end;
+        if (timesChanged) {
+          const s2 = patch.start, e2 = patch.end || Date.now();
+          const clash = sleeps().find((x) => x.id !== id && x.start < e2 && (x.end || Date.now()) > s2);
+          if (clash) {
+            if (isNew) { note(`${hm(clash.start)} 잠 기록과 시간이 겹쳐요`); return; }
+            if (!(await ask(`${hm(clash.start)} 잠 기록과 시간이 겹쳐요. 그래도 저장할까요?`, '저장'))) { editSheet(id); return; }
+          }
+        }
       }
       if ($('#ev')) patch.value = $('#ev').value === '' ? null : Number($('#ev').value);
       if (r.type === 'feed' && !(patch.value > 0)) { note('양을 입력해주세요'); return; }
@@ -1217,7 +1246,7 @@ async function ensureRange(key) {
   const from = dstart(addDays(key, -30));
   try {
     const j = await call('range', { from, to: S.loadedFrom });
-    mergeRecs(j.data.recs); S.loadedFrom = from; render();
+    mergeRecs(j.data.recs); S.loadedFrom = from; bgRender();
   } catch (e) { note('지난 기록을 불러오지 못했어요'); }
 }
 
@@ -1261,11 +1290,11 @@ function saveDayMemo(el, quiet) {
 }
 
 /* 주기적 갱신: 화면 숫자 30초마다, 서버 확인 20초마다(앱이 보일 때만, 바뀐 게 없으면 거의 비용 없음) */
-setInterval(() => { if (S.auth && !document.hidden && S.tab === 'home') render(); }, 30000);
+setInterval(() => { if (S.auth && !document.hidden && S.tab === 'home') bgRender(); }, 30000);
 setInterval(() => { if (S.auth && !document.hidden) sync(); }, 20000);
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden) { const m = $('#daymemo'); if (m) saveDayMemo(m, true); if (S.queue.length) flush(); return; }
-  if (S.auth) { render(); sync(); }
+  if (document.hidden) { const m = $('#daymemo'); if (m) saveDayMemo(m, true); writeCache(); if (S.queue.length) flush(); return; }
+  if (S.auth) { render(); sync(); warmServer(); }
   checkUpdate();
 });
 window.addEventListener('online', () => { if (S.auth) flush(); });
@@ -1288,6 +1317,7 @@ function safeReload() {
     if (!had) S.loading = true;
     render();
     sync(!had).finally(() => { if (S.loading) { S.loading = false; render(); } });
+    warmServer();
     if (S.queue.length) scheduleFlush(300);
   } else render();
   if ('serviceWorker' in navigator && location.protocol === 'https:') {
