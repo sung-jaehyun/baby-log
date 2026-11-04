@@ -158,10 +158,28 @@ async def main():
         check('‹ 누르면 7일 전으로', await pg.evaluate('patKeys()[6]') == await pg.evaluate(f"addDays('{k0}', -7)"))
         await pg.click('[data-act="patMode"][data-m="week"]')
         check('주별은 월요일 시작', await pg.evaluate("wd(patKeys()[0])") == '월')
+        fut = await pg.evaluate("patKeys().filter(k=>k>dkey(Date.now())).length")
+        n_tap = await pg.locator('g[data-act="patDay"]').count()
+        n_row = await pg.locator('.ttable button.trow').count()
+        check(f'아직 안 온 날({fut}일)은 차트·표 모두 누를 수 없음', n_tap == 7 - fut and n_row == 7 - fut, (fut, n_tap, n_row))
         await pg.click('[data-act="patMode"][data-m="recent"]')
+        feed_marks = lambda: pg.locator('svg[aria-label="주간 패턴"] rect[fill="#FAC775"]').count()
+        n_on = await feed_marks()
+        await pg.click('[data-act="patToggle"][data-k="feed"]')
+        n_off = await feed_marks()
+        check('수유 끄면 차트에서 수유 표시가 사라짐', n_on > 0 and n_off == 0, (n_on, n_off))
+        await pg.click('[data-act="patToggle"][data-k="feed"]')
         await pg.click('[data-act="patToggle"][data-k="pee"]')
         check('항목 켜기·끄기는 기기에 저장', (await pg.evaluate("JSON.parse(localStorage.patToggles)")).get('pee') is True)
         await pg.click('[data-act="patToggle"][data-k="pee"]')
+        row_key = await pg.evaluate('patKeys()[4]')
+        await pg.click(f'.ttable button.trow[data-d="{row_key}"]')
+        check('표의 날짜 줄 누르면 그날 하루 탭', await pg.evaluate('S.tab') == 'day' and await pg.evaluate('S.day') == row_key)
+        await pg.click('[data-act="tab"][data-tab="pattern"]')
+        # 진행 중인 밤(열린 잠)은 평균·추이에서 빠짐
+        op = await pg.evaluate("""()=>{ const y=addDays(dkey(Date.now()),-1); S.recs['openN']={id:'openN',type:'sleep',start:at(y,'20:00'),end:null,kind:'밤',by:'재현',deleted:false}; dirty();
+            const ns=nightStats(y); const td=trendData(dkey(Date.now())); const v=td[td.length-1].nightTot; delete S.recs.openN; dirty(); return [ns.open, v]; }""")
+        check('진행 중인 밤은 추이에서 제외', op[0] is True and op[1] is None, op)
         # 겹친 잠은 한 번만 센다
         ov = await pg.evaluate("""()=>{ const k=addDays(dkey(Date.now()),-60); const a=at(k,'20:00'); const before=nightStats(k).tot;
             S.recs['ovA']={id:'ovA',type:'sleep',start:a,end:a+3600000,kind:'밤',by:'재현',deleted:false};
@@ -180,8 +198,8 @@ async def main():
         cdp = await ctx.new_cdp_session(pg)
         await cdp.send('Emulation.setCPUThrottlingRate', {'rate': 6})
         await pg.click('[data-act="tab"][data-tab="home"]'); await pg.wait_for_timeout(300)
-        for label, sel, limit in [('하루 탭', '[data-tab="day"]', 200), ('패턴 탭', '[data-act="tab"][data-tab="pattern"]', 250),
-                                  ('패턴 ‹ 이동', '[data-act="patNav"][data-d="-1"]', 250), ('홈 탭', '[data-act="tab"][data-tab="home"]', 200),
+        for label, sel, limit in [('하루 탭', '[data-tab="day"]', 200), ('패턴 탭', '[data-act="tab"][data-tab="pattern"]', 200),
+                                  ('패턴 ‹ 이동', '[data-act="patNav"][data-d="-1"]', 200), ('홈 탭', '[data-act="tab"][data-tab="home"]', 200),
                                   ('분유 창', '[data-act="feed"]', 200)]:
             ms = await tap_ms(pg, sel)
             check(f'{label} {ms:.0f}ms (기준 {limit}ms)', ms < limit, f'{ms:.0f}ms')
@@ -194,6 +212,8 @@ async def main():
         await pg.evaluate('closeSheet()')
         await cdp.send('Emulation.setCPUThrottlingRate', {'rate': 1})
 
+        leaked = await pg.evaluate("JSON.parse(localStorage.demoDB).recs.filter(r=>'_dk' in r||'_dks' in r||'_local' in r||'_nk' in r).length")
+        check('서버로 보내는 기록에 내부 표시값 없음', leaked == 0, leaked)
         check('화면 오류 없음', not errs, errs)
         await b.close()
     print('\n결과:', '모두 통과' if not FAILS else f'{len(FAILS)}건 실패: ' + ', '.join(FAILS))

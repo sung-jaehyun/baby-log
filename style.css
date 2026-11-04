@@ -202,3 +202,4 @@ svg { display: block; }
 .seg-b { flex: 1; padding: 8px 0; border-radius: 10px; background: var(--bg); color: var(--sub); font-size: 13px; }
 .seg-b.on { background: #3C3489; color: var(--text); font-weight: 600; }
 .h .chips { flex-wrap: nowrap; }
+.ttable .trow.future { opacity: .35; }
