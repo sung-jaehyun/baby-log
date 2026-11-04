@@ -60,7 +60,7 @@ function saveCache() {
       loadedFrom: Math.max(S.loadedFrom, cut), recs: Object.values(S.recs).filter((r) => r.start >= cut) });
   }, 300);
 }
-function dirty() { S._sorted = null; }
+function dirty() { S._sorted = null; S._sleeps = null; }
 function live() {
   if (!S._sorted) S._sorted = Object.values(S.recs).filter((r) => !r.deleted && r.start).sort((a, b) => a.start - b.start);
   return S._sorted;
@@ -69,7 +69,9 @@ function live() {
 /* ---------- 서버 통신 ---------- */
 async function call(action, data, auth = S.auth) {
   if (!auth) { const e = new Error('로그인이 필요해요'); e.code = 'pin'; throw e; }
-  if (auth.url === 'demo') return DEMO.call(action, data, auth.pin);
+  if (auth.url === 'demo') {
+    try { return await DEMO.call(action, data, auth.pin); } catch (e) { e.pinUsed = auth.pin; throw e; }
+  }
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), 40000);
   try {
@@ -249,7 +251,7 @@ function sleepKind(s, e) {
 }
 const nightOf = (r) => (minOfDay(r.start) < 12 * 60 ? addDays(dkey(r.start), -1) : dkey(r.start));
 const sleepEnd = (r, now) => r.end || now;
-const sleeps = () => live().filter((r) => r.type === 'sleep');
+const sleeps = () => S._sleeps || (S._sleeps = live().filter((r) => r.type === 'sleep'));
 const openSleep = () => { const s = sleeps(); for (let i = s.length - 1; i >= 0; i--) if (!s[i].end) return s[i]; return null; };
 const lastOf = (type, fn) => { const l = live(); for (let i = l.length - 1; i >= 0; i--) if (l[i].type === type && (!fn || fn(l[i]))) return l[i]; return null; };
 const isPoop = (r) => r.d1 === '대변' || r.d1 === '둘다';
@@ -401,7 +403,7 @@ function render(force) {
   if (!force && S.auth && typing()) { renderPending = true; return; }
   renderPending = false;
   const root = $('#app');
-  if (!S.auth) { root.innerHTML = viewLogin(); $('#tabs').innerHTML = ''; return; }
+  if (!S.auth) { root.innerHTML = viewLogin(); $('#tabs').innerHTML = ''; warmServer(); return; }
   const v = { home: viewHome, day: viewDay, pattern: viewPattern, growth: viewGrowth, settings: viewSettings }[S.tab] || viewHome;
   root.innerHTML = v();
   renderTabs();
@@ -468,6 +470,9 @@ function statusCard(st) {
       <div class="row2"><span>${st.max ? `최대 ${minTxt(st.max)}` : `목표 ${minTxt(st.target)}`}</span><span><b>${hm(st.pred)}쯤</b> 깸 예상</span></div>`
         : '<div class="row2"><span>일정표에 없는 잠이에요 · 깰 때 낮잠/밤잠을 자동으로 판단해요</span></div>'}</div></div>`;
   }
+  if (st.mode === 'nodata' && S.loading) {
+    return `<div class="card status">${char}<div class="body"><div class="lbl">기록을 불러오는 중…</div><div class="bar"><i class="loadbar"></i></div></div></div>`;
+  }
   if (st.mode === 'nodata') {
     return `<div class="card status">${char}<div class="body"><div class="lbl">반가워요</div><div class="big" style="font-size:20px">잠 기록부터 시작해볼까요?</div>
       <div class="row2"><span>잠·수유를 기록하면 다음 할 일을 계산해드려요</span></div>${feed}</div></div>`;
@@ -507,7 +512,7 @@ function viewDay() {
     <div><div class="lbl">밤잠${ns.count > 1 ? ` (최장 ${minShort(ns.longest)})` : ''}</div><div class="v c-night">${ns.tot ? minShort(ns.tot) : '-'}</div></div>
     <div><div class="lbl">기저귀</div><div class="v c-diaper">소${sm.pee} · 대${sm.poo}</div></div></div>
   <div class="card"><div class="h">계획 대비<span class="lbl">${esc(planFor(key).name)}</span></div>${compareTable(key)}</div>
-  <div class="card list"><div class="h">기록 전체<span class="lbl">${recs.length}건</span></div>${recs.length ? recs.map(recItem).join('') : '<div class="empty">기록이 없어요</div>'}</div>
+  <div class="card list"><div class="h">기록 전체 <span class="lbl">${recs.length}건</span><button class="chip" style="margin-left:auto" data-act="addPast">＋ 기록 추가</button></div>${recs.length ? recs.map(recItem).join('') : '<div class="empty">기록이 없어요</div>'}</div>
   <div class="card"><div class="h">한 줄 메모${memo && memo.by ? `<span class="lbl">${esc(memo.by)}</span>` : ''}</div>
     <input id="daymemo" maxlength="120" placeholder="오늘 있었던 일을 한 줄로" value="${esc(memo ? memo.text : '')}" data-key="${key}"></div>`;
 }
@@ -685,6 +690,14 @@ function viewLogin() {
       <button data-act="pin" data-n="c" style="font-size:14px">지움</button><button data-act="pin" data-n="0">0</button><button data-act="pin" data-n="b" style="font-size:18px">←</button></div>
     <div id="loginMsg" class="lbl" style="margin-top:14px;min-height:20px"></div></div>`;
 }
+/* PIN을 누르는 동안 서버를 미리 깨워 둔다(구글 서버는 처음 요청에 2~4초 걸리므로) */
+let warmedAt = 0;
+function warmServer() {
+  const url = API_URL || LS.get('lastUrl', '');
+  if (!/^https:\/\//.test(url) || Date.now() - warmedAt < 60000) return;
+  warmedAt = Date.now();
+  fetch(url, { mode: 'no-cors', cache: 'no-store' }).catch(() => {});
+}
 async function tryLogin() {
   const url = API_URL || ($('#apiUrl') && $('#apiUrl').value.trim());
   const msg = $('#loginMsg');
@@ -696,9 +709,9 @@ async function tryLogin() {
     auth.user = j.user;
     const sameServer = LS.get('lastUrl', '') === url;
     S.auth = auth; LS.set('auth', auth); LS.set('lastUrl', url);
-    if (!sameServer || !loadCache()) { S.serverTime = 0; S.recs = {}; dirty(); }
+    if (!sameServer || !loadCache()) { S.serverTime = 0; S.recs = {}; dirty(); S.loading = true; }
     S.tab = 'home'; render(true);
-    sync(true);
+    sync(true).finally(() => { if (S.loading) { S.loading = false; render(); } });
     if (j.data && j.data.weakPin) setTimeout(() => pinSheet(true), 300);
   } catch (e) {
     pinBuf = '';
@@ -900,6 +913,25 @@ const ACTIONS = {
   loadLog: busy(async () => { try { const j = await call('getLog', {}); S.logLines = j.data.log; render(); } catch (e) { note('불러오지 못했어요'); } }),
   resync() { note('새로 불러오는 중…'); sync(true); },
   changePin() { pinSheet(false); },
+  addPast() {
+    const types = ['feed', 'sleep', 'diaper', 'bath', 'temp', 'med', 'walk', 'memo'].concat(set('showFood') === 'true' ? ['food'] : []);
+    const now = Date.now();
+    const start = S.day === dkey(now) ? now - 30 * MIN : at(S.day, '12:00');
+    openSheet(`<h3>지난 기록 추가 · ${dayLabel(S.day)}</h3><div class="lbl" style="margin-bottom:10px">무엇을 기록할까요? 다음 화면에서 시각을 고를 수 있어요.</div>
+      <div class="chips">${types.map((t) => `<button class="chip" data-t="${t}">${TYPES[t].n}</button>`).join('')}</div>`, (el) => {
+      el.addEventListener('click', (e) => {
+        const b = e.target.closest('[data-t]'); if (!b) return;
+        const t = b.dataset.t;
+        const draft = { type: t, start };
+        if (t === 'sleep') draft.end = Math.min(start + 60 * MIN, now);
+        if (t === 'feed') { const lf = lastOf('feed'); draft.value = lf ? Number(lf.value) : 150; }
+        if (t === 'diaper') draft.d1 = '소변';
+        if (t === 'temp') draft.value = 36.8;
+        if (t === 'food') draft.d3 = '없음';
+        editSheet(draft);
+      });
+    });
+  },
   retryFailed() { S.queue.push(...S.failed.map((o) => Object.assign(o, { tries: 0, sending: false, err: undefined }))); S.failed = []; saveQueue(); render(); flush(); },
   async dropFailed() { if (await ask(`저장 못 한 기록 ${S.failed.length}건을 버릴까요?`, '버리기')) { S.failed = []; saveQueue(); render(); } },
   async logout() {
@@ -1067,12 +1099,16 @@ function foodSheet() {
 }
 
 /* 기록 수정 */
-function editSheet(id) {
-  const r = S.recs[id]; if (!r) return;
+/* editSheet(기록 id) = 수정, editSheet({type, start}) = 지난 기록 새로 추가 */
+function editSheet(arg) {
+  const isNew = typeof arg === 'object';
+  const r = isNew ? Object.assign({ end: null, value: null, d1: '', d2: '', d3: '', kind: '', memo: '', by: S.auth.user }, arg) : S.recs[arg];
+  if (!r) return;
+  const id = isNew ? null : arg;
   const T = TYPES[r.type] || { n: r.type, i: 'memo' };
   let body = `<div class="field"><label>${r.type === 'sleep' ? '잠든 시각' : '시각'}</label><input type="datetime-local" id="es" value="${toLocalInput(r.start)}"></div>`;
   if (r.type === 'sleep') body += `<div class="field"><label>깬 시각 (비우면 자는 중)</label><input type="datetime-local" id="ee" value="${toLocalInput(r.end)}"></div>
-    <div class="field"><label>구분</label><select id="ek"><option ${r.kind === '낮' ? 'selected' : ''}>낮</option><option ${r.kind === '밤' ? 'selected' : ''}>밤</option></select></div>`;
+    <div class="field"><label>구분</label><select id="ek">${isNew ? '<option value="">자동</option>' : ''}<option ${r.kind === '낮' ? 'selected' : ''}>낮</option><option ${r.kind === '밤' ? 'selected' : ''}>밤</option></select></div>`;
   if (r.type === 'feed') body += `<div class="field"><label>양 (ml)</label><input type="number" inputmode="numeric" id="ev" value="${esc(r.value)}"></div>`;
   if (r.type === 'temp') body += `<div class="field"><label>체온 (℃)</label><input type="number" step="0.1" inputmode="decimal" id="ev" value="${esc(r.value)}"></div>`;
   if (r.type === 'diaper') body += `<div class="field"><label>종류</label><select id="e1">${['소변', '대변', '둘다'].map((k) => `<option ${r.d1 === k ? 'selected' : ''}>${k}</option>`).join('')}</select></div>
@@ -1083,25 +1119,40 @@ function editSheet(id) {
     <div class="field"><label>양</label><div class="inline"><input type="number" id="ev" value="${esc(r.value)}"><select id="e2">${['g', '숟가락'].map((u) => `<option ${r.d2 === u ? 'selected' : ''}>${u}</option>`).join('')}</select></div></div>
     <div class="field"><label>반응</label><select id="e3">${FOOD_REACT.map((n) => `<option ${r.d3 === n ? 'selected' : ''}>${n}</option>`).join('')}</select></div>`;
   body += `<div class="field"><label>${r.type === 'memo' ? '내용' : '메모'}</label><textarea id="em" rows="2" maxlength="300">${esc(r.memo)}</textarea></div>`;
-  openSheet(`<h3>${ART.icons[T.i]}${T.n} 기록 수정</h3>${body}<div class="lbl">기록: ${esc(r.by)}</div>
-    <button class="primary" id="save">저장</button><button class="ghost danger" id="del">삭제</button>`, (el) => {
+  openSheet(`<h3>${ART.icons[T.i]}${T.n} ${isNew ? '기록 추가' : '기록 수정'}</h3>${body}${isNew ? '' : `<div class="lbl">기록: ${esc(r.by)}</div>`}
+    <button class="primary" id="save">${isNew ? '추가' : '저장'}</button>${isNew ? '<button class="ghost" id="cancel">닫기</button>' : '<button class="ghost danger" id="del">삭제</button>'}`, (el) => {
     el.addEventListener('click', async (e) => {
       const b = e.target.closest('button'); if (!b) return;
+      if (b.id === 'cancel') { closeSheet(); return; }
       if (b.id === 'del') { if (await ask('이 기록을 삭제할까요?', '삭제')) { removeRec(id); note('삭제했어요'); } else editSheet(id); return; }
       if (b.id !== 'save') return;
       const patch = { start: fromLocalInput($('#es').value), memo: $('#em').value.trim() };
       if (!patch.start) { note('시각을 입력해주세요'); return; }
-      if (r.type === 'sleep') {
-        patch.end = fromLocalInput($('#ee').value); patch.kind = $('#ek').value;
-        if (patch.end && patch.end <= patch.start) { note('깬 시각이 잠든 시각보다 늦어야 해요'); return; }
-        if (!patch.end && openSleep() && openSleep().id !== id) { note('이미 자는 중인 기록이 있어요'); return; }
-      }
       if (patch.start > Date.now() + 5 * MIN) { note('미래 시각은 저장할 수 없어요'); return; }
+      if (r.type === 'sleep') {
+        patch.end = fromLocalInput($('#ee').value);
+        if (patch.end && patch.end <= patch.start) { note('깬 시각이 잠든 시각보다 늦어야 해요'); return; }
+        if (patch.end && patch.end > Date.now() + 5 * MIN) { note('깬 시각이 미래예요'); return; }
+        if (!patch.end && openSleep() && openSleep().id !== id) { note('이미 자는 중인 기록이 있어요'); return; }
+        patch.kind = $('#ek').value || (patch.end ? sleepKind(patch.start, patch.end) : (isNightTime(patch.start) ? '밤' : '낮'));
+        const s2 = patch.start, e2 = patch.end || Date.now();
+        const clash = sleeps().find((x) => x.id !== id && x.start < e2 && (x.end || Date.now()) > s2);
+        if (clash) { note(`${hm(clash.start)} 잠 기록과 시간이 겹쳐요`); return; }
+      }
       if ($('#ev')) patch.value = $('#ev').value === '' ? null : Number($('#ev').value);
+      if (r.type === 'feed' && !(patch.value > 0)) { note('양을 입력해주세요'); return; }
+      if (r.type === 'temp' && !(patch.value >= 34 && patch.value <= 42)) { note('체온을 확인해주세요'); return; }
       if ($('#e1')) patch.d1 = $('#e1').value.trim();
       if ($('#e2')) patch.d2 = $('#e2').value.trim();
       if ($('#e3')) patch.d3 = $('#e3').value.trim();
-      closeSheet(); updateRec(id, patch); note('수정했어요');
+      if ((r.type === 'med' || r.type === 'food') && !patch.d1) { note(r.type === 'med' ? '약 이름을 입력해주세요' : '재료를 입력해주세요'); return; }
+      if (r.type === 'memo' && !patch.memo) { note('내용을 입력해주세요'); return; }
+      closeSheet();
+      if (isNew) {
+        addRec(Object.assign({ type: r.type }, patch));
+        if (dkey(patch.start) !== S.day && S.tab === 'day') { S.day = dkey(patch.start); render(); }
+        note('추가했어요');
+      } else { updateRec(id, patch); note('수정했어요'); }
     });
   });
 }
@@ -1234,8 +1285,9 @@ function safeReload() {
   try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) {}
   if (S.auth) {
     const had = loadCache();
+    if (!had) S.loading = true;
     render();
-    sync(!had);
+    sync(!had).finally(() => { if (S.loading) { S.loading = false; render(); } });
     if (S.queue.length) scheduleFlush(300);
   } else render();
   if ('serviceWorker' in navigator && location.protocol === 'https:') {

@@ -1,6 +1,6 @@
 // 앱 화면 파일을 휴대폰에 저장해 두고 바로 띄운다(기록 데이터는 여기서 다루지 않음).
 // 배포할 때마다 VERSION을 바꾸면 새 파일 묶음을 통째로 받아 한 번에 교체한다(옛 파일과 섞이지 않게).
-const VERSION = 'v20261104-135322';
+const VERSION = 'v20261104-143550';
 const SHELL = ['./', 'index.html', 'style.css', 'config.js', 'art.js', 'demo.js', 'app.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png'];
 
 self.addEventListener('install', (e) => {

@@ -114,8 +114,8 @@ svg { display: block; }
 .cmp .hd { color: var(--muted); font-size: 11px; padding-top: 0; }
 
 /* 시트(아래에서 올라오는 창) */
-.dim { position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 20; display: flex; align-items: flex-end; justify-content: center; animation: fade .15s; }
-.sheet { background: #1E1C33; width: 100%; max-width: 480px; border-radius: 20px 20px 0 0; padding: 16px 16px calc(18px + env(safe-area-inset-bottom)); max-height: 88dvh; overflow-y: auto; animation: up .2s ease-out; }
+.dim { position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 20; display: flex; align-items: flex-end; justify-content: center; animation: fade .1s; }
+.sheet { background: #1E1C33; width: 100%; max-width: 480px; border-radius: 20px 20px 0 0; padding: 16px 16px calc(18px + env(safe-area-inset-bottom)); max-height: 88dvh; overflow-y: auto; animation: up .12s ease-out; }
 .sheet h3 { margin: 0 0 12px; font-size: 17px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
 .sheet h3 svg { width: 28px; height: 28px; }
 .sheet .sec { font-size: 12px; color: var(--muted); margin: 14px 0 6px; }
@@ -139,7 +139,7 @@ svg { display: block; }
 
 /* 저장 직후 토스트 */
 .toast { position: fixed; left: 50%; bottom: calc(76px + env(safe-area-inset-bottom)); transform: translateX(-50%); width: calc(100% - 24px); max-width: 456px;
-  background: #F1EFE8; color: #2C2C2A; border-radius: 16px; padding: 10px 12px; z-index: 30; animation: up .2s ease-out; }
+  background: #F1EFE8; color: #2C2C2A; border-radius: 16px; padding: 10px 12px; z-index: 30; animation: up .12s ease-out; }
 .toast .msg { font-weight: 600; font-size: 14px; margin-bottom: 8px; display: flex; justify-content: space-between; }
 .toast .msg small { font-weight: 400; color: #5F5E5A; }
 .toast .acts { display: flex; gap: 6px; }
@@ -187,3 +187,6 @@ svg { display: block; }
 @keyframes shrink { to { width: 0; } }
 .zz { animation: zz 2.4s ease-in-out infinite; }
 @keyframes zz { 50% { opacity: .3; } }
+.loadbar { width: 40%; background: var(--nap); animation: loading 1s ease-in-out infinite alternate; }
+@keyframes loading { from { margin-left: 0; } to { margin-left: 60%; } }
+.keys button:active { background: var(--card2); }
