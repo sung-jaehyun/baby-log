@@ -99,6 +99,17 @@ const LOOK = (() => {
       layout(); s0 = Math.max(fw / W, fh / H); s = s0; ox = (fw - W * s) / 2; oy = (fh - H * s) / 2; draw();
       const onResize = () => { const cx = (fw / 2 - ox) / s, cy = (fh / 2 - oy) / s, k = s / s0; layout(); s0 = Math.max(fw / W, fh / H); s = s0 * k; ox = fw / 2 - cx * s; oy = fh / 2 - cy * s; draw(); };
       window.addEventListener('resize', onResize);
+      // 안드로이드 뒤로가기 = 취소(앱이 닫히지 않게 기록을 하나 쌓아 둠)
+      let closed = false;
+      const close = (box, fromBack) => {
+        if (closed) return; closed = true;
+        window.removeEventListener('resize', onResize); window.removeEventListener('popstate', onPop); ov.remove();
+        if (!fromBack) try { history.back(); } catch (x) {}
+        done(box);
+      };
+      const onPop = () => close(null, true);
+      try { history.pushState({ crop: 1 }, ''); } catch (x) {}
+      window.addEventListener('popstate', onPop);
       // 손가락: 1개 = 옮기기, 2개 = 확대·축소(두 손가락 가운데 기준)
       const pts = new Map(); let last = null;
       const rel = (e) => { const r = stage.getBoundingClientRect(); return [e.clientX - r.left - fl, e.clientY - r.top - ft]; };
@@ -121,8 +132,7 @@ const LOOK = (() => {
       zr.addEventListener('input', () => zoomAt(s0 * Number(zr.value), fw / 2, fh / 2));
       ov.querySelector('.crop-bt').addEventListener('click', (e) => {
         const b = e.target.closest('button'); if (!b) return;
-        window.removeEventListener('resize', onResize); ov.remove();
-        done(b.dataset.c === '1' ? { sx: -ox / s, sy: -oy / s, sw: fw / s, sh: fh / s } : null);
+        close(b.dataset.c === '1' ? { sx: -ox / s, sy: -oy / s, sw: fw / s, sh: fh / s } : null, false);
       });
     });
   }

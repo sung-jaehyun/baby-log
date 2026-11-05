@@ -373,6 +373,10 @@ async def main():
         fr2 = await pg.evaluate("(()=>{const r=document.querySelector('.crop-frame').getBoundingClientRect(); return r.width/r.height})()")
         await pg.click('.crop-bt [data-c="0"]'); await pg.wait_for_timeout(200)
         check('프로필은 정사각형 틀, 취소하면 사진 안 바뀜', abs(fr2 - 1) < 0.01 and not await pg.evaluate("LOOK.photo('avatar')") and await pg.evaluate("LOOK.photo('hero')") == old)
+        async with pg.expect_file_chooser() as fc: await pg.click('[data-act="photo"][data-slot="avatar"]')
+        await (await fc.value).set_files(pic); await pg.wait_for_selector('.crop-ov')
+        await pg.go_back(); await pg.wait_for_timeout(300)
+        check('위치 맞추기에서 뒤로가기 = 취소(앱은 그대로 설정 화면)', await pg.evaluate("!document.querySelector('.crop-ov') && S.tab==='settings' && !LOOK.photo('avatar')"))
         await pg.evaluate("LOOK.clearPhoto('hero'); S.tab='home'; render()")
 
         print('[기록 지우기]')
