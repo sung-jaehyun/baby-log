@@ -1,7 +1,7 @@
 """자동 테스트: 데모 모드에서 실제 휴대폰처럼 눌러보며 핵심 기능과 반응 속도를 확인한다.
 실행: (저장소 폴더에서) python3 -m http.server 8765 &  →  python3 tests/e2e.py
 """
-import asyncio, sys, json
+import asyncio, sys, json, base64
 from playwright.async_api import async_playwright
 
 BASE = 'http://localhost:8765/index.html'
@@ -349,6 +349,31 @@ async def main():
         big = await pg.evaluate("$('.ccard .clk').offsetHeight")
         check('화면이 길면 원형 시계가 커지고 짧으면 작아짐', big > small, (small, big))
         await pg.set_viewport_size({'width': 390, 'height': 844}); await pg.evaluate('render()')
+
+        print('[사진 위치 맞추기]')
+        png = await pg.evaluate("""(()=>{const c=document.createElement('canvas'); c.width=1600; c.height=1000; const g=c.getContext('2d');
+          g.fillStyle='#78aade'; g.fillRect(0,0,1600,1000); g.fillStyle='#e62828'; g.beginPath(); g.arc(1200,350,100,0,7); g.fill(); return c.toDataURL('image/png').split(',')[1];})()""")
+        pic = {'name': 'baby.png', 'mimeType': 'image/png', 'buffer': base64.b64decode(png)}
+        await pg.click('.gear')
+        async with pg.expect_file_chooser() as fc: await pg.click('[data-act="photo"][data-slot="hero"]')
+        await (await fc.value).set_files(pic); await pg.wait_for_selector('.crop-ov')
+        fr = await pg.evaluate("(()=>{const r=document.querySelector('.crop-frame').getBoundingClientRect(); return [r.x,r.y,r.width,r.height]})()")
+        check('상태 카드 사진 틀은 4:5', abs(fr[2] / fr[3] - 0.8) < 0.01, fr)
+        cx, cy = fr[0] + fr[2] / 2, fr[1] + fr[3] / 2
+        await pg.mouse.move(cx, cy); await pg.mouse.down(); await pg.mouse.move(cx - 120, cy, steps=6); await pg.mouse.up()
+        await pg.click('.crop-bt .ok'); await pg.wait_for_timeout(300)
+        dims = await pg.evaluate("new Promise(r=>{const i=new Image(); i.onload=()=>r([i.width,i.height]); i.src=LOOK.photo('hero');})")
+        check('상태 카드 사진 320×400으로 저장, 위치 맞추기 화면 닫힘', dims == [320, 400] and await pg.evaluate("!document.querySelector('.crop-ov')"), dims)
+        red = await pg.evaluate("""new Promise(r=>{const i=new Image(); i.onload=()=>{const c=document.createElement('canvas'); c.width=320; c.height=400; const g=c.getContext('2d'); g.drawImage(i,0,0);
+          const d=g.getImageData(0,0,320,400).data; let n=0,sx=0; for(let y=0;y<400;y+=2) for(let x=0;x<320;x+=2){const k=(y*320+x)*4; if(d[k]>180&&d[k+1]<90){n++; sx+=x;}} r(n?sx/n/320:-1);}; i.src=LOOK.photo('hero');})""")
+        check('끌어서 옮긴 위치대로 잘림(빨간 점이 오른쪽 끝 → 안쪽으로)', 0.55 < red < 0.95, red)
+        old = await pg.evaluate("LOOK.photo('hero')")
+        async with pg.expect_file_chooser() as fc: await pg.click('[data-act="photo"][data-slot="avatar"]')
+        await (await fc.value).set_files(pic); await pg.wait_for_selector('.crop-ov')
+        fr2 = await pg.evaluate("(()=>{const r=document.querySelector('.crop-frame').getBoundingClientRect(); return r.width/r.height})()")
+        await pg.click('.crop-bt [data-c="0"]'); await pg.wait_for_timeout(200)
+        check('프로필은 정사각형 틀, 취소하면 사진 안 바뀜', abs(fr2 - 1) < 0.01 and not await pg.evaluate("LOOK.photo('avatar')") and await pg.evaluate("LOOK.photo('hero')") == old)
+        await pg.evaluate("LOOK.clearPhoto('hero'); S.tab='home'; render()")
 
         print('[기록 지우기]')
         check('관리자 표시: 맨 위 사람만', await pg.evaluate("S.users[0].admin === true && S.users.slice(1).every(u=>!u.admin)"))
