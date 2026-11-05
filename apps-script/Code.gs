@@ -295,7 +295,8 @@ function archiveRows_(s, n) {
   const cut = Date.now() - 400 * 864e5;
   const vals = s.getRange(2, 1, n, SHEETS.rec.head.length).getValues();
   const oldIdx = [];
-  vals.forEach(function (r, i) { if (r[0] && Number(r[2]) < cut) oldIdx.push(i); });
+  // 성장·접종·이유식 등은 오래돼도 앱에서 계속 보여야 하므로 옮기지 않는다
+  vals.forEach(function (r, i) { if (r[0] && Number(r[2]) < cut && !LONG_TYPES[String(r[1])]) oldIdx.push(i); });
   if (!oldIdx.length) return;
   const ss = SpreadsheetApp.getActive();
   const a = ss.getSheetByName('보관') || ss.insertSheet('보관');

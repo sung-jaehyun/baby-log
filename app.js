@@ -144,11 +144,12 @@ async function sync(full) {
     const j = isFull ? await call('load', {}) : await call('sync', { since: S.serverTime - 3 * MIN, rev: S.rev || 0 });
     if (!S.auth) return;
     lastSync = Date.now();
-    if (j.api && j.api < 3 && !S.apiWarned) { S.apiWarned = true; note('서버 코드를 새 버전으로 배포해주세요 (성장 기록 보관)'); }
+    if ((!j.api || j.api < 3) && S.auth.url !== 'demo' && !S.apiWarned) { S.apiWarned = true; note('서버 코드를 새 버전으로 배포해주세요 (성장 기록 보관)'); }
     if (!isFull && j.data.same) { S.rev = j.rev; return; }
     if (isFull) {
       const keep = new Set([...S.queue, ...S.failed].map((q) => q.id));
-      Object.keys(S.recs).forEach((id) => { const r = S.recs[id]; if (!keep.has(id) && !(r._local && r._local >= sentAt)) delete S.recs[id]; });
+      const oldServer = !j.api || j.api < 3;   // 옛 서버는 오래된 성장 기록을 안 보내므로 지우지 않음
+      Object.keys(S.recs).forEach((id) => { const r = S.recs[id]; if (!keep.has(id) && !(r._local && r._local >= sentAt) && !(oldServer && LONG_TYPES.has(r.type))) delete S.recs[id]; });
       S.loadedFrom = j.now - 45 * DAY;
     }
     applyMeta(j.data);
@@ -666,7 +667,7 @@ function patKeys() {
 const md = (key) => { const [, m, d] = key.split('-').map(Number); return `${m}/${d}`; };
 const wd = (key) => { const [y, m, d] = key.split('-').map(Number); return WEEK[new Date(y, m - 1, d).getDay()]; };
 const avg = (a) => { const v = a.filter((x) => x != null && !isNaN(x)); return v.length ? v.reduce((s, x) => s + x, 0) / v.length : null; };
-const hasData = (key) => live().some((r) => dk(r) === key && (r.type === 'feed' || r.type === 'sleep'));
+const hasData = (key) => dayRecs(key).some((r) => r.type === 'feed' || r.type === 'sleep');
 
 function viewPattern() {
   const keys = patKeys(), today = dkey(Date.now());
@@ -1488,6 +1489,7 @@ document.addEventListener('click', (e) => {
 document.addEventListener('change', (e) => {
   const el = e.target;
   if (el.dataset && el.dataset.set) {
+    if (el.tagName === 'SELECT') el.blur();   // 고른 뒤 바로 화면에 반영되게(선택 칸이 포커스를 잡고 있으면 다시 그리기를 미룸)
     let v = el.value.trim();
     if (el.dataset.set === 'feedPresets') {
       const nums = v.split(/[,\s]+/).map(Number).filter((x) => x > 0 && x <= 400);

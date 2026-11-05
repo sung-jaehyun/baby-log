@@ -84,7 +84,7 @@ const DEMO = (() => {
     }
     if (['setSettings', 'savePlan', 'applyPlan', 'saveUsers'].includes(action)) d.rev++;
     save(d);
-    return { ok: true, user: u.name, now, rev: d.rev, data: JSON.parse(JSON.stringify(out)) };
+    return { ok: true, api: 3, user: u.name, now, rev: d.rev, data: JSON.parse(JSON.stringify(out)) };
   }
   return { call };
 })();

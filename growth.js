@@ -20,9 +20,10 @@ const dDay = (key) => Math.round((dstart(key) - dstart(dkey(Date.now()))) / DAY)
 const dateInputVal = (ms) => (ms ? dkey(ms) : dkey(Date.now()));
 
 /* ---------- WHO 백분위 ---------- */
-function lmsAt(tbl, age) {
+function lmsAt(kind, age) {
   if (age == null || age < 0 || age >= 36) return null;
-  const i = Math.min(Math.floor(age), tbl.length - 2), f = age - i;
+  const tbl = kind === 'w' ? WHO_BOYS.weight : age < 24 ? WHO_BOYS.length : WHO_BOYS.height;
+  const base = tbl[0][0], i = Math.min(Math.floor(age) - base, tbl.length - 2), f = age - base - i;
   const a = tbl[i], b = tbl[i + 1];
   return [a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f, a[3] + (b[3] - a[3]) * f];
 }
@@ -33,14 +34,14 @@ function erf(x) {   // Abramowitz-Stegun 7.1.26
   return s * y;
 }
 function percentile(kind, age, val) {
-  const lms = lmsAt(kind === 'w' ? WHO_BOYS.weight : WHO_BOYS.height, age);
+  const lms = lmsAt(kind, age);
   if (!lms || !(val > 0)) return null;
   const [L, M, S2] = lms;
   const z = Math.abs(L) < 1e-6 ? Math.log(val / M) / S2 : (Math.pow(val / M, L) - 1) / (L * S2);
   return 50 * (1 + erf(z / Math.SQRT2));
 }
 function valueAtZ(kind, age, z) {
-  const lms = lmsAt(kind === 'w' ? WHO_BOYS.weight : WHO_BOYS.height, age);
+  const lms = lmsAt(kind, age);
   if (!lms) return null;
   const [L, M, S2] = lms;
   return Math.abs(L) < 1e-6 ? M * Math.exp(S2 * z) : M * Math.pow(1 + L * S2 * z, 1 / L);
@@ -59,8 +60,7 @@ function measures() {
 }
 
 /* ---------- 예방접종·검진 일정 (질병관리청 표준예방접종일정, 국가건강정보포털 영유아검진 시기) ---------- */
-function vaxList() {
-  const rv = set('rvType'), je = set('jeType');
+function vaxList(rv = set('rvType'), je = set('jeType')) {
   const L = [
     ['HepB1', 'B형간염', '1차', 0, 0], ['BCG', '결핵(BCG)', '1회', 0, null, { endDays: 28, note: '피내용 무료, 경피용 유료' }], ['HepB2', 'B형간염', '2차', 1, 1],
     ['DTaP1', 'DTaP', '1차', 2, 2], ['IPV1', '폴리오', '1차', 2, 2], ['Hib1', 'Hib(뇌수막염)', '1차', 2, 2], ['PCV1', '폐렴구균', '1차', 2, 2], ['RV1', '로타바이러스', '1차', 2, 2],
@@ -68,11 +68,11 @@ function vaxList() {
     ['DTaP3', 'DTaP', '3차', 6, 6], ['IPV3', '폴리오', '3차', 6, 6], ['Hib3', 'Hib(뇌수막염)', '3차', 6, 6], ['PCV3', '폐렴구균', '3차', 6, 6], ['HepB3', 'B형간염', '3차', 6, 6],
   ];
   if (rv !== '로타릭스') L.push(['RV3', '로타바이러스', '3차', 6, 6, { note: rv === '로타텍' ? '' : '로타텍만 3차 (로타릭스는 2차로 끝)' }]);
-  L.push(['Flu1', '인플루엔자', '첫해 1차', 6, null, { note: '생후 6개월부터, 이후 매년' }], ['Flu2', '인플루엔자', '첫해 2차', 6, null, { after: 'Flu1', note: '1차 4주 뒤' }]);
+  L.push(['Flu1', '인플루엔자', '첫해 1차', 6, null, { note: '생후 6개월부터, 이후 매년' }], ['Flu2', '인플루엔자', '첫해 2차', 6, null, { after: 'Flu1', gapD: 28, note: '1차 4주 뒤' }]);
   L.push(['Hib4', 'Hib(뇌수막염)', '4차', 12, 15], ['PCV4', '폐렴구균', '4차', 12, 15], ['MMR1', 'MMR', '1차', 12, 15], ['VAR', '수두', '1회', 12, 15],
-    ['HepA1', 'A형간염', '1차', 12, 23], ['HepA2', 'A형간염', '2차', 12, 23]);
-  if (je === '사백신') L.push(['IJEV1', '일본뇌염(사백신)', '1차', 12, 23], ['IJEV2', '일본뇌염(사백신)', '2차', 12, 23], ['IJEV3', '일본뇌염(사백신)', '3차', 24, 35]);
-  else if (je === '생백신') L.push(['LJEV1', '일본뇌염(생백신)', '1차', 12, 23, { note: '생백신은 유료' }], ['LJEV2', '일본뇌염(생백신)', '2차', 24, 35]);
+    ['HepA1', 'A형간염', '1차', 12, 23], ['HepA2', 'A형간염', '2차', 12, 23, { after: 'HepA1', gapM: 6, note: '1차 6~12개월 뒤' }]);
+  if (je === '사백신') L.push(['IJEV1', '일본뇌염(사백신)', '1차', 12, 23], ['IJEV2', '일본뇌염(사백신)', '2차', 12, 23, { after: 'IJEV1', gapD: 7, note: '1차 7~30일 뒤' }], ['IJEV3', '일본뇌염(사백신)', '3차', 24, 35, { after: 'IJEV2', gapM: 12, note: '2차 12개월 뒤' }]);
+  else if (je === '생백신') L.push(['LJEV1', '일본뇌염(생백신)', '1차', 12, 23, { note: '생백신은 유료' }], ['LJEV2', '일본뇌염(생백신)', '2차', 24, 35, { after: 'LJEV1', gapM: 12, note: '1차 12개월 뒤' }]);
   else L.push(['JE', '일본뇌염', '종류 선택 필요', 12, 23, { note: '사백신(5회) 또는 생백신(2회) — 위에서 골라주세요', pick: true }]);
   L.push(['DTaP4', 'DTaP', '4차', 15, 18], ['DTaP5', 'DTaP', '5차', 48, 83], ['IPV4', '폴리오', '4차', 48, 83], ['MMR2', 'MMR', '2차', 48, 83]);
   if (je === '사백신') L.push(['IJEV4', '일본뇌염(사백신)', '4차', 72, 83]);
@@ -80,6 +80,11 @@ function vaxList() {
   if (je === '사백신') L.push(['IJEV5', '일본뇌염(사백신)', '5차', 144, 155]);
   return L.map(([k, n, dose, from, to, o]) => Object.assign({ k, n, dose, from, to }, o || {}));
 }
+const VAX_NAMES = (() => {   // 종류 선택과 상관없이 모든 접종 키 → 이름
+  const m = new Map();
+  [['', ''], ['로타텍', '사백신'], ['로타릭스', '생백신']].forEach(([rv, je]) => vaxList(rv, je).forEach((x) => m.set(x.k, `${x.n} ${x.dose}`)));
+  return m;
+});
 const CHECKS = [
   ['C1', '1차 검진', null, null, { d0: 14, d1: 35, win: '생후 14~35일' }], ['C2', '2차 검진', 4, 6], ['C3', '3차 검진', 9, 12], ['C4', '4차 검진', 18, 24],
   ['C5', '5차 검진', 30, 36], ['C6', '6차 검진', 42, 48], ['C7', '7차 검진', 54, 60], ['C8', '8차 검진', 66, 71],
@@ -88,9 +93,10 @@ const CHECKS = [
 
 function doneMap(type) {
   const m = new Map();
-  byType(type).sort((a, b) => a.start - b.start).forEach((r) => { if (!m.has(r.d1)) m.set(r.d1, r); });
+  byType(type).filter((r) => r.d3 !== '선택').sort((a, b) => a.start - b.start).forEach((r) => { if (!m.has(r.d1)) m.set(r.d1, r); });
   return m;
 }
+const dupsOf = (type, key) => byType(type).filter((r) => r.d1 === key && r.d3 !== '선택').sort((a, b) => a.start - b.start);
 const monthWin = (from, to) => (from === to ? `${from}개월` : to == null ? `${from}개월부터` : from >= 48 && to % 12 === 11 ? `${from / 12}~${(to + 1) / 12 - 1}세` : `${from}~${to}개월`);
 function schedInfo(item, done) {
   const b = birthKey(); if (!b) return null;
@@ -101,9 +107,11 @@ function schedInfo(item, done) {
     start = addMonths(b, item.from);
     end = item.endDays ? addDays(b, item.endDays) : item.to == null ? null : addDays(addMonths(b, item.to + 1), -1);
     win = item.endDays ? '생후 4주 이내' : item.from === 0 && item.to === 0 ? '출생 시' : monthWin(item.from, item.to);
-    if (item.after) {
+    if (item.after) {   // 앞 접종을 한 날 + 최소 간격부터. 앞 접종 전이면 '1차 후'
       const prev = done.get(item.after);
-      start = prev ? addDays(dk(prev), 28) : null;
+      const byGap = prev ? (item.gapM ? addMonths(dk(prev), item.gapM) : addDays(dk(prev), item.gapD || 0)) : null;
+      start = byGap ? (byGap > start ? byGap : start) : null;
+      if (start && end && start > end) end = null;
       win = item.note || win;
     }
   }
@@ -120,7 +128,7 @@ function statusTag(s) {
   if (s.st === 'done') return `<span class="tag ok-tag">✓ ${shortDate(dk(s.rec))}</span>`;
   if (s.st === 'now') return `<span class="tag now-tag">지금 시기${s.end ? ` · ~${shortDate(s.end)}` : ''}</span>`;
   if (s.st === 'late') return '<span class="tag late-tag">시기 지남</span>';
-  if (!s.start) return '<span class="tag">1차 후</span>';
+  if (!s.start) return '<span class="tag">앞 차수 후</span>';
   const d = dDay(s.start);
   return `<span class="tag">${d <= 60 ? `D-${d}` : shortDate(s.start)}</span>`;
 }
@@ -133,15 +141,17 @@ function viewGrowth() {
 
 /* 기념일 + 월간 리포트 */
 function anniList() {
-  const b = birthKey(), [y, m, d] = b.split('-').map(Number);
-  const fixed = [['100일', addDays(b, 99)], ['200일', addDays(b, 199)], ['300일', addDays(b, 299)], ['돌', `${y + 1}-${pad(m)}-${pad(d)}`], ['두 돌', `${y + 2}-${pad(m)}-${pad(d)}`]]
+  const b = birthKey();
+  const fixed = [['100일', addDays(b, 99)], ['200일', addDays(b, 199)], ['300일', addDays(b, 299)], ['돌', addMonths(b, 12)], ['두 돌', addMonths(b, 24)]]
     .map(([n, k]) => ({ n, k }));
   const custom = byType('anniv').map((r) => ({ n: r.d1, k: dk(r), r }));
   return fixed.concat(custom).sort((a, c) => (a.k < c.k ? -1 : 1));
 }
 function anniCard() {
   const today = dkey(Date.now());
-  const up = anniList().filter((a) => a.k >= today).slice(0, 3);
+  const all = anniList();
+  const up = all.filter((a) => a.k >= today).slice(0, 3);
+  const pastCustom = all.filter((a) => a.r && a.k < today).reverse();
   const cell = (a) => {
     const dd = dDay(a.k);
     const inner = `<div class="lbl">${esc(a.n)}</div><b>${dd === 0 ? '오늘!' : `D-${dd}`}</b><div class="lbl">${shortDate(a.k)}</div>`;
@@ -149,6 +159,7 @@ function anniCard() {
   };
   return `<div class="card"><div class="h">기념일<button class="chip" data-act="grAnni" style="padding:5px 10px;font-size:12px">＋ 추가</button></div>
     <div class="anni">${up.length ? up.map(cell).join('') : '<div class="empty">다가오는 기념일이 없어요</div>'}</div>
+    ${pastCustom.length ? `<div class="sec">지난 기념일</div><div class="list">${pastCustom.map((a) => `<button class="item" data-act="grAnni" data-id="${esc(a.r.id)}"><span class="t">${shortDate(a.k)}</span><span class="what">${esc(a.n)}</span><span class="tag">${babyAge(a.k) ? `${babyAge(a.k).n}일째` : ''}</span></button>`).join('')}</div>` : ''}
     <button class="report-btn" data-act="grReport">이번 달 리포트 보기 →</button></div>`;
 }
 
@@ -235,13 +246,14 @@ function vaxBody(vax) {
     const last = groups[groups.length - 1];
     if (last && last.g === g) last.l.push(x); else groups.push({ g, l: [x] });
   });
-  const custom = byType('vax').filter((r) => r.d3 === '선택').sort((a, b) => b.start - a.start);
+  const keys = new Set(vax.map((x) => x.it.k)), names = VAX_NAMES();
+  const custom = byType('vax').filter((r) => r.d3 === '선택' || !keys.has(r.d1)).sort((a, b) => b.start - a.start);
   return `<div class="grid2" style="margin:2px 0 6px">
       <div class="field" style="margin:0"><label>로타바이러스</label><select data-set="rvType"><option value="">선택 안 함</option>${['로타텍', '로타릭스'].map((v) => `<option ${set('rvType') === v ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
       <div class="field" style="margin:0"><label>일본뇌염</label><select data-set="jeType"><option value="">선택 안 함</option>${['사백신', '생백신'].map((v) => `<option ${set('jeType') === v ? 'selected' : ''}>${v}</option>`).join('')}</select></div></div>
     ${vaxGroups(groups)}
     <div class="sec">선택 접종 <span class="tag">선택</span></div>
-    <div class="list">${custom.map((r) => `<button class="item" data-act="grVaxCustom" data-id="${esc(r.id)}"><span class="what">${esc(r.d1)}${r.d2 ? `<small>${esc(r.d2)}</small>` : ''}</span><span class="tag ok-tag">✓ ${shortDate(dk(r))}</span></button>`).join('') || '<div class="empty">수막구균 등 선택 접종은 ＋로 기록해요</div>'}</div>
+    <div class="list">${custom.map((r) => `<button class="item" data-act="grVaxCustom" data-id="${esc(r.id)}"><span class="what">${esc(names.get(r.d1) || r.d1)}${r.d3 === '선택' ? '' : ' <span class="lbl">(종류 변경 전 기록)</span>'}${r.d2 ? `<small>${esc(r.d2)}</small>` : ''}</span><span class="tag ok-tag">✓ ${shortDate(dk(r))}</span></button>`).join('') || '<div class="empty">수막구균 등 선택 접종은 ＋로 기록해요</div>'}</div>
     <button class="chip" data-act="grVaxCustom" style="margin-top:8px">＋ 선택 접종 기록</button>
     <div class="lbl" style="margin-top:8px">일정: 질병관리청 표준예방접종일정 기준. 실제 접종은 소아과 안내를 따르세요.</div>`;
 }
@@ -304,14 +316,14 @@ function checkDate(v) {
   if (birthKey() && v < birthKey()) return '생일보다 이전 날짜예요';
   return null;
 }
-function formSheet({ title, icon, body, rec, onSave, onMount }) {
+function formSheet({ title, icon, body, rec, onSave, onMount, reopen }) {
   openSheet(`<h3>${icon || ''}${title}</h3>${body}
     <button class="primary" id="save">저장</button>${rec ? '<button class="ghost danger" id="del">삭제</button>' : '<button class="ghost" id="cancel">닫기</button>'}`, (el) => {
     if (onMount) onMount(el);
     el.addEventListener('click', async (e) => {
       const b = e.target.closest('button'); if (!b) return;
       if (b.id === 'cancel') { closeSheet(); return; }
-      if (b.id === 'del') { if (await ask('이 기록을 삭제할까요?', '삭제')) { closeSheet(); removeRec(rec.id); note('삭제했어요'); } return; }
+      if (b.id === 'del') { if (await ask('이 기록을 삭제할까요?', '삭제')) { closeSheet(); removeRec(rec.id); note('삭제했어요'); } else if (reopen) reopen(); return; }
       if (b.id === 'save') { const err = onSave(el); if (err) note(err); }
     });
   });
@@ -324,7 +336,7 @@ function saveOrAdd(rec, fields) {
 
 function growthSheet(rec) {
   formSheet({
-    title: rec ? '키·몸무게 수정' : '키·몸무게 기록', rec,
+    title: rec ? '키·몸무게 수정' : '키·몸무게 기록', rec, reopen: () => growthSheet(S.recs[rec.id]),
     body: `${dateField('gd', '잰 날', rec ? dk(rec) : dkey(Date.now()))}
       <div class="grid2"><div class="field"><label>몸무게 (kg)</label><input id="gw" type="number" step="0.01" inputmode="decimal" placeholder="예: 6.8" value="${rec && Number(rec.value) > 0 ? esc(rec.value) : ''}"></div>
       <div class="field"><label>키 (cm)</label><input id="gh" type="number" step="0.1" inputmode="decimal" placeholder="예: 62.5" value="${rec && Number(rec.d1) > 0 ? esc(rec.d1) : ''}"></div></div>
@@ -345,11 +357,13 @@ function vaxSheet(k) {
   const it = vaxList().find((x) => x.k === k); if (!it) return;
   const vd = doneMap('vax'), s = schedInfo(it, vd), rec = s.rec;
   formSheet({
-    title: `${esc(it.n)} ${esc(it.dose)}`, rec,
+    title: `${esc(it.n)} ${esc(it.dose)}`, rec, reopen: () => vaxSheet(k),
     body: `<div class="lbl" style="margin-bottom:10px">권장 시기: ${esc(s.win)}${s.start ? ` (${shortDate(s.start)}${s.end ? ` ~ ${shortDate(s.end)}` : '부터'})` : ''}${it.note ? `<br>${esc(it.note)}` : ''}</div>
       ${it.pick ? '<div class="lbl">일본뇌염은 사백신·생백신 중 하나를 먼저 골라주세요(예방접종 목록 위 선택 칸).</div>' : `${dateField('vd', '접종한 날', rec ? dk(rec) : dkey(Date.now()))}
       <div class="field"><label>병원</label><input id="vh" maxlength="30" value="${esc(rec ? rec.d2 : '')}"></div>
-      <div class="field"><label>메모</label><input id="vm" maxlength="100" placeholder="예: 백신 이름, 열 남" value="${esc(rec ? rec.memo : '')}"></div>`}`,
+      <div class="field"><label>메모</label><input id="vm" maxlength="100" placeholder="예: 백신 이름, 열 남" value="${esc(rec ? rec.memo : '')}"></div>
+      ${dupsOf('vax', it.k).length > 1 ? `<div class="lbl c-over" style="margin-bottom:6px">같은 접종이 ${dupsOf('vax', it.k).length}건 기록돼 있어요 <button class="chip" id="dedup" style="padding:4px 9px;font-size:12px">첫 기록만 남기기</button></div>` : ''}`}`,
+    onMount: (el) => el.addEventListener('click', (e) => { if (e.target.id !== 'dedup') return; dupsOf('vax', it.k).slice(1).forEach((r) => removeRec(r.id)); closeSheet(); note('중복 기록을 정리했어요'); }),
     onSave: () => {
       if (it.pick) { closeSheet(); return null; }
       const d = $('#vd').value, err = checkDate(d); if (err) return err;
@@ -362,7 +376,7 @@ function vaxCustomSheet(id) {
   const rec = id ? S.recs[id] : null;
   const sugg = ['수막구균', '인플루엔자(매년)', '코로나19'];
   formSheet({
-    title: rec ? '선택 접종 수정' : '선택 접종 기록', rec,
+    title: rec ? '선택 접종 수정' : '선택 접종 기록', rec, reopen: () => vaxCustomSheet(id),
     body: `<div class="field"><label>접종 이름</label><input id="cn" maxlength="30" value="${esc(rec ? rec.d1 : '')}"></div>
       <div class="chips" style="margin:-4px 0 10px">${sugg.map((x) => `<button class="chip" data-s="${esc(x)}" style="padding:6px 10px;font-size:12px">${esc(x)}</button>`).join('')}</div>
       ${dateField('cd', '접종한 날', rec ? dk(rec) : dkey(Date.now()))}
@@ -381,7 +395,7 @@ function checkSheet(k) {
   const it = CHECKS.find((x) => x.k === k); if (!it) return;
   const s = schedInfo(it, doneMap('checkup')), rec = s.rec;
   formSheet({
-    title: esc(it.n), rec,
+    title: esc(it.n), rec, reopen: () => checkSheet(k),
     body: `<div class="lbl" style="margin-bottom:10px">검진 시기: ${esc(s.win)} (${shortDate(s.start)} ~ ${shortDate(s.end)})</div>
       ${dateField('kd', '검진 받은 날', rec ? dk(rec) : dkey(Date.now()))}
       <div class="field"><label>병원</label><input id="kh" maxlength="30" value="${esc(rec ? rec.d2 : '')}"></div>
@@ -408,7 +422,7 @@ function hospSheet(id) {
   const rec = id ? S.recs[id] : null;
   let reason = rec ? rec.d2 : '';
   formSheet({
-    title: rec ? '병원 기록 수정' : '병원 기록', rec,
+    title: rec ? '병원 기록 수정' : '병원 기록', rec, reopen: () => hospSheet(id),
     body: `${dateField('hd', '다녀온 날', rec ? dk(rec) : dkey(Date.now()))}
       <div class="field"><label>병원</label><input id="hn" maxlength="30" value="${esc(rec ? rec.d1 : '')}"></div>
       <div class="sec" style="margin-top:0">이유</div><div class="chips" style="margin-bottom:10px">${HOSP_REASONS.map((x) => `<button class="chip ${reason === x ? 'on' : ''}" data-r="${x}">${x}</button>`).join('')}</div>
@@ -425,7 +439,7 @@ function hospSheet(id) {
 function msSheet(id) {
   const rec = id ? S.recs[id] : null;
   formSheet({
-    title: rec ? '발달 기록 수정' : '처음 해낸 날', rec,
+    title: rec ? '발달 기록 수정' : '처음 해낸 날', rec, reopen: () => msSheet(id),
     body: `<div class="chips" style="margin-bottom:10px">${MILESTONES.map((x) => `<button class="chip ${rec && rec.d1 === x ? 'on' : ''}" data-m="${x}">${x}</button>`).join('')}</div>
       <div class="field"><label>항목 (직접 입력 가능)</label><input id="mn" maxlength="30" value="${esc(rec ? rec.d1 : '')}"></div>
       ${dateField('md', '날짜', rec ? dk(rec) : dkey(Date.now()))}
@@ -443,7 +457,7 @@ function msSheet(id) {
 function anniSheet(id) {
   const rec = id ? S.recs[id] : null;
   formSheet({
-    title: rec ? '기념일 수정' : '기념일 추가', rec,
+    title: rec ? '기념일 수정' : '기념일 추가', rec, reopen: () => anniSheet(id),
     body: `<div class="field"><label>이름</label><input id="an" maxlength="20" placeholder="예: 첫 외출" value="${esc(rec ? rec.d1 : '')}"></div>
       <div class="field"><label>날짜</label><input type="date" id="ad" value="${rec ? dk(rec) : dkey(Date.now())}" min="${birthKey() || ''}"></div>`,
     onSave: () => {
@@ -483,6 +497,23 @@ function monthStats(ym) {
 }
 const arrow = (d, n) => (Math.abs(d) < 1e-9 ? '변화 없음 ' : `${d > 0 ? '▲' : '▼'} ${Math.abs(d).toFixed(n)}`);
 function reportSheet(ym) {
+  const html = reportHtml(ym);
+  const open = $('#dim .sheet.report');
+  if (open) { open.innerHTML = html; return; }
+  openSheet(html, (el) => {
+    el.classList.add('report');
+    el.addEventListener('click', (e) => {
+      const b = e.target.closest('button'); if (!b) return;
+      if (b.id === 'close') { GR.month = null; closeSheet(); return; }
+      if (b.dataset.m) {
+        const cur = GR.month;
+        const n = b.dataset.m === '1' ? addMonths(`${cur}-01`, 1).slice(0, 7) : prevMonth(cur);
+        reportSheet(n); loadMonth(n);
+      }
+    });
+  });
+}
+function reportHtml(ym) {
   const cur = dkey(Date.now()).slice(0, 7), first = (birthKey() || cur).slice(0, 7);
   GR.month = ym;
   const a = monthStats(ym), p = monthStats(prevMonth(ym));
@@ -495,7 +526,7 @@ function reportSheet(ym) {
   const n0 = (v) => String(Math.round(v)), n1 = (v) => (Math.round(v * 10) / 10).toString(), t = (v) => minShort(v);
   const [y, m] = ym.split('-').map(Number);
   const row = (k, v) => `<div class="k">${k}</div><div class="a">${v}</div>`;
-  openSheet(`<div class="daynav" style="margin-bottom:6px"><button data-m="-1" ${ym <= first ? 'style="visibility:hidden"' : ''}>‹</button>
+  return (`<div class="daynav" style="margin-bottom:6px"><button data-m="-1" ${ym <= first ? 'style="visibility:hidden"' : ''}>‹</button>
       <div class="d">${y}년 ${m}월 리포트<small>${a.days ? `기록 ${a.days}일 기준 · 지난달과 비교` : '이 달 기록이 없어요'}</small></div>
       <button data-m="1" ${ym >= cur ? 'style="visibility:hidden"' : ''}>›</button></div>
     <div class="cmp" style="grid-template-columns:auto 1fr">
@@ -506,20 +537,12 @@ function reportSheet(ym) {
       ${row('키', a.h ? `${a.h.v}cm${p.h ? ` <span class="lbl">${arrow(a.h.v - p.h.v, 1)}cm</span>` : ''}` : '<span class="lbl">이 달 측정 없음</span>')}</div>
     ${a.ms.length ? `<div class="sec">이 달의 발달</div>${a.ms.map((r) => `<div class="lbl" style="padding:3px 0">${shortDate(dk(r))} · <b style="color:var(--text)">${esc(r.d1)}</b></div>`).join('')}` : ''}
     <div class="lbl" style="margin-top:10px">진행 중인 오늘은 빼고, 기록이 있는 날만 평균 내요.</div>
-    <button class="ghost" id="close">닫기</button>`, (el) => {
-    el.addEventListener('click', (e) => {
-      const b = e.target.closest('button'); if (!b) return;
-      if (b.id === 'close') { closeSheet(); return; }
-      if (b.dataset.m) {
-        const n = b.dataset.m === '1' ? addMonths(`${ym}-01`, 1).slice(0, 7) : prevMonth(ym);
-        reportSheet(n); loadMonth(n);
-      }
-    });
-  });
+    <button class="ghost" id="close">닫기</button>`);
 }
 function loadMonth(ym) {
-  const p = ensureRange(`${prevMonth(ym)}-01`);
-  if (p && p.then) p.then(() => { if (GR.month === ym && $('#dim')) reportSheet(ym); });
+  const need = `${prevMonth(ym)}-01`;
+  if (!S.loadedFrom || dstart(need) >= S.loadedFrom) return;   // 이미 있는 기간이면 다시 계산하지 않음
+  ensureRange(need).then(() => { if (GR.month === ym && $('#dim .sheet.report')) reportSheet(ym); });
 }
 
 /* ---------- 동작 ---------- */
