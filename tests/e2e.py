@@ -331,7 +331,11 @@ async def main():
         check('오늘 하루 메모는 홈 알림으로', '병원 다녀옴' in home)
         await pg.click('#tabs [data-tab="home"]'); await pg.wait_for_timeout(200)
         n_al = await pg.evaluate("document.querySelectorAll('.alert').length")
-        check('알림 여러 개면 원형 시계가 가장 작게(150px)', n_al < 2 or abs(await pg.evaluate("$('.ccard .clk').offsetHeight") - 150) <= 2)
+        check('알림 여러 개면 원형 시계가 줄어 한 화면 유지(110px 이상)', n_al < 2 or (await pg.evaluate("$('.ccard .clk').offsetHeight") >= 108 and await pg.evaluate("document.documentElement.scrollHeight <= innerHeight + 1 || $('.ccard .clk').offsetHeight <= 112")))
+        await pg.set_viewport_size({'width': 384, 'height': 790}); await pg.evaluate("delete S.memos[dkey(Date.now())]; render()")
+        one = await pg.evaluate("[document.documentElement.scrollHeight, innerHeight, $('.ccard .clk').offsetHeight, !!$('.plan'), document.querySelectorAll('.alert').length]")
+        check('384×790 남은 일정+알림 1개: 스크롤 없이 시계 130px 이상', one[0] <= one[1] + 1 and one[2] >= 130, one)
+        await pg.set_viewport_size({'width': 390, 'height': 844}); await pg.evaluate("S.memos[dkey(Date.now())]={text:'병원 다녀옴',by:'아내'}; render()")
         lay = await pg.evaluate("""(()=>{const c=$('.ccard').getBoundingClientRect(), k=$('.ccard .clk').getBoundingClientRect(), l=$('.ccard .leg').getBoundingClientRect();
           const sp=$('.ccard .leg span').getBoundingClientRect(), b=$('.ccard .leg b').getBoundingClientRect();
           return {left:k.left-c.left, right:c.right-l.right, gap:b.left-sp.right}})()""")

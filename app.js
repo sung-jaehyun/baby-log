@@ -513,9 +513,9 @@ function renderTabs() {
   const el = $('#tabs');
   if (el._html !== html) { el.innerHTML = html; el._html = html; }
 }
-/* 홈 원형 시계 크기: 남는 높이만큼 키우고 모자라면 줄인다(150~200px).
+/* 홈 원형 시계 크기: 남는 높이만큼 키우고 모자라면 줄인다(110~200px).
    가로는 설명 칸 옆에 오른쪽 여백이 남도록 카드 폭에 맞춰 상한을 둔다 */
-const CLOCK_MIN = 150, CLOCK_MAX = 200;
+const CLOCK_MIN = 110, CLOCK_MAX = 200;
 function fitClock() {
   const app = $('#app'), c = $('.ccard .clk'), card = $('.ccard'), leg = $('.ccard .leg');
   if (!c) return;

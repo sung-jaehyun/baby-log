@@ -146,23 +146,26 @@ b { font-weight: 800; }
 .btn-sm svg { width: 20px; height: 20px; }
 
 /* 홈: 남은 일정 띠 · 마지막 기록 · 알림 */
-.plan { padding: 9px 11px; }
-.plan .h { margin-bottom: 6px; }
+.plan { padding: 7px 11px 8px; }
+.plan .h { margin-bottom: 5px; }
 .strip { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; margin: 0 -2px; padding: 0 2px; }
 .strip::-webkit-scrollbar { display: none; }
-.sc { flex: none; background: var(--soft); border-radius: 12px; padding: 6px 9px; text-align: center; min-width: 62px; }
+/* 일정 칸은 한 줄(시각 + 아이콘·이름)로 납작하게 */
+.sc { flex: none; display: flex; align-items: center; gap: 5px; background: var(--soft); border-radius: 10px; padding: 5px 9px; white-space: nowrap; }
 .sc.on { background: var(--hero); color: var(--on-accent); }
-.sc b { display: block; font-size: 13.5px; font-variant-numeric: tabular-nums; }
+.sc b { font-size: 13px; font-variant-numeric: tabular-nums; }
 .sc span { font-size: 11px; font-weight: 700; display: inline-flex; align-items: center; gap: 2px; }
 .sc span svg { width: 14px; height: 14px; display: inline-block; }
 .last { display: flex; align-items: center; gap: 9px; padding: 8px 11px; width: 100%; text-align: left; }
 .last .k { font-size: 10.5px; color: var(--muted); font-weight: 600; }
 .last .v { font-size: 13px; font-weight: 800; }
 .last .ed { margin-left: auto; font-size: 11.5px; color: var(--ink); font-weight: 700; white-space: nowrap; }
-.alert { display: flex; align-items: center; gap: 10px; border-radius: 15px; padding: 9px 12px; background: var(--alert); margin-bottom: 9px; width: 100%; text-align: left; box-shadow: var(--shadow); }
-.alert .e { font-size: 21px; line-height: 1; }
-.alert b { font-size: 13px; color: var(--alert-t); display: block; }
-.alert small { display: block; font-size: 11px; color: var(--alert-s); font-weight: 600; }
+.alert { display: flex; align-items: center; gap: 9px; border-radius: 14px; padding: 7px 12px; background: var(--alert); margin-bottom: 9px; width: 100%; text-align: left; box-shadow: var(--shadow); }
+.alert .e { font-size: 18px; line-height: 1; }
+/* 알림도 한 줄: 제목 뒤에 설명을 작게 붙이고, 넘치면 말줄임 */
+.alert > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.alert b { font-size: 13px; color: var(--alert-t); }
+.alert small { font-size: 11px; color: var(--alert-s); font-weight: 600; margin-left: 6px; }
 .pending { text-align: center; font-size: 11px; color: var(--muted); margin-top: -2px; }
 
 /* 목록 줄 */
