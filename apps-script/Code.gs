@@ -3,7 +3,9 @@
  * 이 파일 전체를 Apps Script 편집기의 Code.gs에 붙여넣고, setup 실행 후 "웹 앱"으로 배포하세요.
  */
 const TZ = 'Asia/Seoul';
-const API_VERSION = 2;
+const API_VERSION = 3;
+/** 성장 탭 기록과 이유식은 오래돼도 항상 앱에 보낸다 */
+const LONG_TYPES = { growth: 1, vax: 1, checkup: 1, hospital: 1, milestone: 1, anniv: 1, food: 1 };
 const KEEP_DAYS = 45;
 const MAX_FAILS = 10;              // PIN을 이만큼 틀리면
 const LOCK_SECONDS = 3600;         // 이 시간 동안 잠금
@@ -22,6 +24,7 @@ const SHEETS = {
 const DEFAULT_SETTINGS = {
   babyName: '', birthDate: '2026-07-30', feedPresets: '105,135,150,170,200',
   nightStart: '19:00', nightEnd: '07:00', tempWarn: '37.5', tempHigh: '38.0', showFood: 'false', nightMode: 'start',
+  rvType: '', jeType: '',
 };
 const PLAN_4 = {
   wake: '07:00', bed: '19:40', bath: '19:00', feedInterval: 180,
@@ -94,7 +97,7 @@ const API = {
     return {
       settings: readSettings_(), plans: readPlans_(), apply: readApply_(), memos: readMemos_(),
       users: readUsers_().map(function (u) { return { name: u.name, active: u.active }; }),
-      recs: readRecs_(function (r) { return r.start >= since || r.updated >= since; }),
+      recs: readRecs_(function (r) { return r.start >= since || r.updated >= since || LONG_TYPES[r.type]; }),
     };
   },
 

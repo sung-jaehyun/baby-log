@@ -42,7 +42,7 @@ const S = {
   logLines: null, editPlan: null,
   _sorted: null,
 };
-const DEF = { babyName: '', birthDate: '2026-07-30', feedPresets: '105,135,150,170,200', nightStart: '19:00', nightEnd: '07:00', tempWarn: '37.5', tempHigh: '38.0', showFood: 'false', nightMode: 'start' };
+const DEF = { babyName: '', birthDate: '2026-07-30', feedPresets: '105,135,150,170,200', nightStart: '19:00', nightEnd: '07:00', tempWarn: '37.5', tempHigh: '38.0', showFood: 'false', nightMode: 'start', rvType: '', jeType: '' };
 const set = (k) => (S.settings[k] ?? DEF[k]);
 
 function loadCache() {
@@ -65,7 +65,7 @@ function writeCache() {
   clearTimeout(cacheTimer);
   const cut = Date.now() - 60 * DAY;
   LS.set('cache', { settings: S.settings, plans: S.plans, apply: S.apply, users: S.users, memos: S.memos, serverTime: S.serverTime,
-    loadedFrom: Math.max(S.loadedFrom, cut), recs: Object.values(S.recs).filter((r) => r.start >= cut) });
+    loadedFrom: Math.max(S.loadedFrom, cut), recs: Object.values(S.recs).filter((r) => r.start >= cut || LONG_TYPES.has(r.type)) });
 }
 function dirty() { S._sorted = null; S._sleeps = null; S._idx = null; }
 /* 날짜별·밤별 기록 목록을 한 번 만들어 두고 화면 그릴 때 다시 쓴다(기록이 바뀌면 dirty()로 새로 만듦) */
@@ -144,6 +144,7 @@ async function sync(full) {
     const j = isFull ? await call('load', {}) : await call('sync', { since: S.serverTime - 3 * MIN, rev: S.rev || 0 });
     if (!S.auth) return;
     lastSync = Date.now();
+    if (j.api && j.api < 3 && !S.apiWarned) { S.apiWarned = true; note('서버 코드를 새 버전으로 배포해주세요 (성장 기록 보관)'); }
     if (!isFull && j.data.same) { S.rev = j.rev; return; }
     if (isFull) {
       const keep = new Set([...S.queue, ...S.failed].map((q) => q.id));
@@ -462,7 +463,7 @@ function viewHome() {
   const st = statusInfo();
   const today = dkey(Date.now()), yest = addDays(today, -1);
   const sm = daySummary(today), ns = nightStats(set('nightMode') === 'midnight' ? today : yest);
-  const recent = live().slice(-3).reverse();
+  const recent = live().filter((r) => !GROWTH_ONLY.has(r.type)).slice(-3).reverse();
   const open = openSleep();
   return `${header()}${statusCard(st)}
   <div class="btns">
@@ -537,7 +538,7 @@ function viewDay() {
   const key = S.day, today = dkey(Date.now());
   const a = babyAge(key);
   const sm = daySummary(key), ns = nightStats(key);
-  const recs = dayRecs(key).slice().reverse();
+  const recs = dayRecs(key).filter((r) => !GROWTH_ONLY.has(r.type)).reverse();
   const memo = S.memos[key];
   return `<div class="daynav"><button data-act="day" data-d="-1" aria-label="이전 날">‹</button>
     <div class="d">${dayLabel(key)}<small>${a ? `${a.n}일째` : ''}${key === today ? ' · 오늘' : ''}</small></div>
@@ -848,18 +849,6 @@ function goalCard(today) {
   return `<div class="h">목표 vs 실제<span class="lbl">최근 7일 · ${days}일 기준</span></div>
     <div class="cmp" style="grid-template-columns:auto 1fr auto auto"><div class="hd">항목</div><div class="hd">목표</div><div class="hd a">실제</div><div class="hd a">차이</div>${rows}</div>
     <div class="lbl" style="margin-top:6px">목표는 날마다 그날 적용된 일정표 기준이에요 · 10분 넘게 차이 나면 주황</div>`;
-}
-function viewGrowth() {
-  const b = set('birthDate');
-  let anni = '';
-  if (b) {
-    const today = dstart(dkey(Date.now()));
-    const mk = (label, key) => { const left = Math.round((dstart(key) - today) / DAY); return `<div><div class="lbl">${label}</div><b>${left > 0 ? `D-${left}` : left === 0 ? '오늘!' : '지남'}</b><div class="lbl">${dayLabel(key)}</div></div>`; };
-    const [y, m, d] = b.split('-').map(Number);
-    const list = [['100일', addDays(b, 99)], ['200일', addDays(b, 199)], ['돌', `${y + 1}-${pad(m)}-${pad(d)}`]].filter(([, k]) => dstart(k) >= today - 7 * DAY);
-    anni = `<div class="card"><div class="h">기념일</div><div class="anni">${list.map(([l, k]) => mk(l, k)).join('')}</div></div>`;
-  }
-  return `${header()}${anni}<div class="card placeholder">성장 탭은 2차에서 만들어요.<br>키·몸무게, 예방접종·검진, 발달·이유식 기록이 들어갈 자리예요.</div>`;
 }
 
 /* 설정 */
@@ -1193,6 +1182,7 @@ const ACTIONS = {
     if (await ask(`이 기기에서 로그아웃할까요?${n ? `<br><span class="lbl">아직 올라가지 않은 기록 ${n}건은 다시 로그인하면 이어서 올라가요.</span>` : ''}`, '로그아웃')) logout();
   },
 };
+Object.assign(ACTIONS, GROWTH_ACTIONS);
 /* 서버를 기다리는 버튼은 누르는 동안 막아 두 번 눌리지 않게 */
 function busy(fn) {
   let running = false;
