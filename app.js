@@ -105,13 +105,15 @@ async function call(action, data, auth = S.auth) {
 }
 /* 관리자가 기록을 지우면(서버의 reset 시각이 바뀌면) 이 휴대폰 저장본도 비우고 새로 받는다.
    지우기 전에 만든 저장 대기 기록은 버린다(서버도 받지 않음). 지운 뒤에 만든 것만 남긴다. */
+/* 서버마다 따로 기억(데모 ↔ 실제 서버를 바꿔도 섞이지 않게) */
+const resetKey = () => `resetAt:${S.auth ? S.auth.url : ''}`;
 function seenReset(t, scope, quiet) {
   if (t == null || !S.auth) return;
   t = Number(t) || 0;
-  const known = LS.get('resetAt', null);
+  const known = LS.get(resetKey(), null);
   if (known === t) return;
   if (known != null && t < known) return;   // 늦게 도착한 옛 응답: 무시
-  LS.set('resetAt', t);
+  LS.set(resetKey(), t);
   if (t === 0) return;   // 지운 적 없음
   // 지우기 전에 만든 '새 기록'·'하루 메모'만 버린다(수정·삭제는 서버가 판단). 매일 기록만 지웠으면 성장 기록은 남김
   const skew = S.skew || 0, keepGrowth = scope !== 'all';
@@ -137,6 +139,13 @@ function gotMeta(j, t0) {
   if (j.now) S.skew = j.now - (t0 + Date.now()) / 2;
   seenReset(j.reset, j.resetScope);
 }
+/* 이 기록이 마지막 기록 지우기 전에 만든 것인가(그렇다면 서버에서 지워진 것) */
+function wipedRec(id) {
+  const t = LS.get(resetKey(), 0), r = S.recs[id];
+  if (!t || !r) return false;
+  const ts = Number(r.created || r.start || 0);
+  return ts > 0 && ts + (S.skew || 0) <= t;
+}
 const errMsg = (e) => (e.server ? e.message : '연결이 안 돼요. 잠시 후 다시 해주세요.');
 /* 지금 쓰는 PIN으로 보낸 요청이 거절됐을 때만 로그아웃(내가 PIN을 바꾸는 중 엇갈린 요청은 무시) */
 const isAuthErr = (e) => (e.code === 'pin' || e.code === 'locked') && S.auth && e.pinUsed === S.auth.pin && !S.pinChanging;
@@ -157,13 +166,15 @@ function authFailed(msg) {
   render(true);
   const m = $('#loginMsg'); if (m) m.textContent = msg || 'PIN이 바뀌었거나 사용이 중지됐어요. 다시 입력해주세요.';
 }
-function applyMeta(d) {
+function applyMeta(d, full) {
   if (d.settings) S.settings = d.settings;
   if (d.plans) S.plans = d.plans;
   if (d.apply) S.apply = d.apply;
   if (d.users) S.users = d.users;
   if (d.memos) {
     const busy = new Set(S.queue.filter((q) => q.op === 'memo').map((q) => q.id));
+    // 전체를 받을 때는 서버에 없는 메모(지워진 것)를 빼고 서버 것으로 맞춤. 아직 올라가지 않은 메모만 남김
+    if (full) Object.keys(S.memos).forEach((k) => { if (!busy.has(k) && !(k in d.memos)) delete S.memos[k]; });
     Object.keys(d.memos).forEach((k) => { if (!busy.has(k)) S.memos[k] = d.memos[k]; });
   }
 }
@@ -190,7 +201,7 @@ async function sync(full) {
       Object.keys(S.recs).forEach((id) => { const r = S.recs[id]; if (!keep.has(id) && !(r._local && r._local >= sentAt) && !(oldServer && LONG_TYPES.has(r.type))) delete S.recs[id]; });
       S.loadedFrom = j.now - 45 * DAY;
     }
-    applyMeta(j.data);
+    applyMeta(j.data, isFull);
     mergeRecs(j.data.recs || [], sentAt);
     S.serverTime = j.now; S.rev = j.rev;
     if (j.user && j.user !== S.auth.user) { S.auth.user = j.user; LS.set('auth', S.auth); }
@@ -267,7 +278,7 @@ async function flush() {
             S.recs[r.rec.id] = r.rec; dirty();
           }
         } else if (r.code === 'reset') done.add(o);   // 기록 지우기 전에 만든 변경: 버림
-        else if (r.code === 'notfound' && (o.op === 'update' || o.op === 'remove') && LS.get('resetAt', 0) > 0) done.add(o);   // 지워진 기록을 고친 것: 버림
+        else if (r.code === 'notfound' && (o.op === 'update' || o.op === 'remove') && wipedRec(o.id)) done.add(o);   // 기록 지우기로 없어진 기록을 고친 것: 버림
         else if (r.code === 'retry') again = true;
         else {
           o.tries = (o.tries || 0) + 1;
@@ -1146,8 +1157,8 @@ const SET_SHEETS = {
 /* 가족·PIN: 맨 위 사람이 관리자(기록 지우기 가능). 순서는 바꾸지 않는다 */
 function usersSheet(list) {
   const draw = () => `<h3>가족 · PIN 관리</h3><div class="users">${list.map((u, i) => `<div class="item" data-u="${i}">
-      <input class="u-name" value="${esc(u.name)}" placeholder="이름" maxlength="10" style="flex:1.1">
-      <input class="u-pin" type="password" inputmode="numeric" maxlength="4" placeholder="${u.oldName ? '새 PIN' : 'PIN 4자리'}" value="${esc(u.pin || '')}" style="flex:1">
+      <input class="u-name" value="${esc(u.name)}" placeholder="이름" maxlength="10" style="flex:1.1" ${i === 0 && !isAdmin() ? 'disabled' : ''}>
+      <input class="u-pin" type="password" inputmode="numeric" maxlength="4" placeholder="${i === 0 && !isAdmin() ? '관리자만 변경' : u.oldName ? '새 PIN' : 'PIN 4자리'}" value="${esc(u.pin || '')}" style="flex:1" ${i === 0 && !isAdmin() ? 'disabled' : ''}>
       ${i === 0 ? '<span class="badge2">관리자</span>' : `<button class="switch ${u.active ? 'on' : ''}" data-i="${i}" aria-label="사용"></button>`}</div>`).join('')}</div>
     <button class="chip" id="add" style="margin-top:6px">＋ 사람 추가</button>
     <div class="lbl" style="margin-top:8px;line-height:1.6">PIN은 바꿀 때만 입력하세요. 비워두면 그대로예요.<br>스위치를 끄면 그 사람은 앱을 못 써요(기록은 남음).</div>

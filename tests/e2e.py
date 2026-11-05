@@ -295,7 +295,11 @@ async def main():
         await pg.evaluate('closeSheet()')
         await pg.click('#tabs [data-tab="home"]'); await pg.click('.gear'); await pg.wait_for_timeout(300)
         ms = await tap_ms(pg, '[data-act="look"][data-v="jua"]')
-        check(f'글씨체 바꾸기 {ms:.0f}ms (기준 200ms)', ms < 200, f'{ms:.0f}ms')
+        check(f'글씨체 누르면 바로 표시 {ms:.0f}ms (기준 200ms)', ms < 200, f'{ms:.0f}ms')
+        await pg.wait_for_timeout(400)
+        ms = await pg.evaluate("""()=>new Promise(res=>{const t0=performance.now(); document.querySelector('[data-act="look"][data-v="gaegu"]').click();
+          const chk=()=>{ if(getComputedStyle(document.body).fontFamily.includes('Gaegu')) requestAnimationFrame(()=>requestAnimationFrame(()=>res(performance.now()-t0))); else setTimeout(chk,5); }; chk(); })""")
+        check(f'글씨체가 화면 전체에 적용되기까지 {ms:.0f}ms (기준 500ms, 저사양 6배 느림)', ms < 500, f'{ms:.0f}ms')
         await pg.wait_for_timeout(400)
         ms = await tap_ms(pg, '[data-act="look"][data-v="dark"]')
         check(f'테마 바꾸기 {ms:.0f}ms (기준 200ms)', ms < 200, f'{ms:.0f}ms')
@@ -352,19 +356,19 @@ async def main():
         G = {'growth', 'vax', 'checkup', 'hospital', 'milestone', 'anniv'}
         check('① 매일 기록만 지움: 서버에 성장 기록만 남음', len(db['recs']) > 0 and all(r['type'] in G for r in db['recs']) and not db['memos'])
         check('이 휴대폰 화면도 비워지고 성장 기록은 남음', await pg.evaluate("!live().some(r=>r.type==='feed'||r.type==='sleep') && live().some(r=>r.type==='growth') && !Object.keys(S.memos).length"))
-        await pg.evaluate("(()=>{ const t=LS.get('resetAt',0); S.queue.push({op:'add',id:'old1',rec:{id:'old1',type:'feed',start:t-60000,value:90},at:t-1000}); S.queue.push({op:'add',id:'new1',rec:{id:'new1',type:'feed',start:Date.now(),value:95},at:Date.now()}); })()")
+        await pg.evaluate("(()=>{ const t=LS.get(resetKey(),0); S.queue.push({op:'add',id:'old1',rec:{id:'old1',type:'feed',start:t-60000,value:90},at:t-1000}); S.queue.push({op:'add',id:'new1',rec:{id:'new1',type:'feed',start:Date.now(),value:95},at:Date.now()}); })()")
         await settle(pg)
         ids = await pg.evaluate("JSON.parse(localStorage.demoDB).recs.map(r=>r.id)")
         check('지우기 전에 만든 늦은 기록은 버리고, 뒤에 만든 건 저장', 'old1' not in ids and 'new1' in ids, ids)
         # 검토에서 나온 경우들
         w0 = await pg.evaluate("S.wipeN")
         await pg.evaluate("seenReset(1, 'daily')"); await pg.wait_for_timeout(300)
-        check('옛 reset 값이 늦게 와도 무시(두 번 지우지 않음)', await pg.evaluate("S.wipeN") == w0 and await pg.evaluate("LS.get('resetAt',0)") > 1)
+        check('옛 reset 값이 늦게 와도 무시(두 번 지우지 않음)', await pg.evaluate("S.wipeN") == w0 and await pg.evaluate("LS.get(resetKey(),0)") > 1)
         gid = await pg.evaluate("byType('growth')[0].id")
-        await pg.evaluate("(id)=>{ const t=LS.get('resetAt',0); S.queue.push({op:'update',id,rec:{value:6.5},at:t-5000}); }", gid)
+        await pg.evaluate("(id)=>{ const t=LS.get(resetKey(),0); S.queue.push({op:'update',id,rec:{value:6.5},at:t-5000}); }", gid)
         await pg.evaluate("(id)=>updateRec(id,{value:7.1})", gid); await settle(pg)
         check('지우기 전 수정에 합쳐진 뒤의 수정도 남긴 성장 기록에 반영', await pg.evaluate("(id)=>JSON.parse(localStorage.demoDB).recs.find(r=>r.id===id).value", gid) == 7.1)
-        await pg.evaluate("""(()=>{ const t=LS.get('resetAt',0);
+        await pg.evaluate("""(()=>{ const t=LS.get(resetKey(),0);
             S.queue.push({op:'add',id:'oldv1',rec:{id:'oldv1',type:'feed',start:t-60000,value:80,created:t-60000}});
             S.queue.push({op:'add',id:'oldv2',rec:{id:'oldv2',type:'feed',start:Date.now(),value:85,created:Date.now()}}); })()""")
         await settle(pg)
@@ -380,6 +384,10 @@ async def main():
         await pg.click('.sheet [data-s="all"]'); await pg.fill('#rp', await pg.evaluate('S.auth.pin')); await pg.fill('#rc', '지우기'); await pg.click('#go')
         await pg.wait_for_function("!document.querySelector('.sheet')", timeout=5000); await pg.wait_for_timeout(1500)
         check('② 전부 지움: 서버·화면 모두 비고 설정은 그대로', await pg.evaluate("JSON.parse(localStorage.demoDB).recs.length === 0 && live().length === 0 && set('feedPresets') === '105,135,150,170,200'"))
+        pin_now = await pg.evaluate('S.auth.pin')
+        await pg.evaluate("S.memos['2026-01-01']={text:'옛 메모',by:''}; writeCache(); logout()")
+        await login(pg, pin_now); await pg.wait_for_timeout(800)
+        check('다시 로그인해도 지워진 하루 메모가 되살아나지 않음', not await pg.evaluate("!!S.memos['2026-01-01']"))
         check('화면 오류 없음', not errs, errs)
         await b.close()
     print('\n결과:', '모두 통과' if not FAILS else f'{len(FAILS)}건 실패: ' + ', '.join(FAILS))
