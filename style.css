@@ -100,7 +100,7 @@ b { font-weight: 800; }
 
 /* 홈: 상태 카드 */
 .home { display: flex; flex-direction: column; }
-.hero { border-radius: 20px; padding: 11px; color: var(--on-accent); background: var(--hero); box-shadow: var(--hero-shadow); margin-bottom: 9px; }
+.hero { border-radius: 20px; padding: 10px; color: var(--on-accent); background: var(--hero); box-shadow: var(--hero-shadow); margin-bottom: 9px; }
 .hrow { display: flex; gap: 10px; align-items: center; }
 .ph { width: 50px; height: 50px; border-radius: 15px; overflow: hidden; flex: none; position: relative; background: #FBEFE6; }
 .ph > svg { width: 100%; height: 100%; }
@@ -108,20 +108,29 @@ b { font-weight: 800; }
 .st { font-size: 14px; font-weight: 800; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .st .tag2 { font-size: 10.5px; background: rgba(255,255,255,.28); padding: 2px 8px; border-radius: 9px; font-weight: 700; }
 .st-sub { font-size: 11px; font-weight: 600; opacity: .95; margin-top: 2px; }
-.tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-top: 9px; }
-.tile { border-radius: 15px; padding: 8px 10px; background: var(--card); color: var(--text); text-align: left; }
-.tile .hd { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 800; }
-.tile .hd i { width: 24px; height: 24px; border-radius: 8px; display: flex; align-items: center; justify-content: center; }
-.tile .hd i svg { width: 18px; height: 18px; }
-.tile .k { font-size: 10.5px; color: var(--muted); font-weight: 600; margin-top: 4px; }
+/* 왼쪽 큰 사진 + 오른쪽(제목, 잠·수유 칸 위아래) */
+.hbody { display: flex; gap: 9px; align-items: stretch; }
+.ph.big { width: 40%; height: auto; min-height: 120px; border-radius: 18px; background: rgba(255,255,255,.85); }
+.ph.big > svg { display: block; }
+.ph.big .badge { right: 6px; bottom: 6px; width: 30px; height: 30px; font-size: 17px; }
+.hright { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.tiles { display: flex; flex-direction: column; gap: 6px; }
+/* 좁은 화면: 제목 옆 꼬리표(☀️ 깸 등)는 사진 배지와 같은 뜻이라 숨겨 제목을 한 줄로 */
+@media (max-width: 380px) { .hright .st .tag2 { display: none; } }
+.tile { border-radius: 14px; padding: 6px 10px; background: var(--card); color: var(--text); text-align: left; }
+.tile .hd { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 800; white-space: nowrap; }
+.tile .hd i { width: 22px; height: 22px; border-radius: 8px; display: flex; align-items: center; justify-content: center; flex: none; }
+.tile .hd i svg { width: 17px; height: 17px; }
+.tile .hd .nm { overflow: hidden; text-overflow: ellipsis; }
 .tile .v { font-size: 21px; font-weight: 800; line-height: 1.15; font-variant-numeric: tabular-nums; }
+.tile .hd .v { margin-left: auto; }
 .tile .v small { font-size: 12px; font-weight: 700; }
-.bar2 { height: 5px; border-radius: 3px; background: var(--soft2); margin: 4px 0 3px; overflow: hidden; }
+.bar2 { height: 5px; border-radius: 3px; background: var(--soft2); margin: 5px 0 3px; overflow: hidden; }
 .bar2 > b { display: block; height: 100%; border-radius: 3px; transition: width .4s; }
 .tile .n { font-size: 10.5px; font-weight: 800; }
 .tS .hd i { background: var(--ts); } .tS .n { color: var(--nap-t); }
 .tF .hd i { background: var(--tf); } .tF .n { color: var(--feed-t); }
-.tile.empty-t .v { font-size: 14px; color: var(--muted); padding: 6px 0 4px; }
+.tile.empty-t .v { font-size: 12.5px; color: var(--muted); padding: 5px 0 2px; }
 .loadbar { display: block; width: 40%; height: 100%; background: var(--accent2); animation: loading 1s ease-in-out infinite alternate; }
 
 /* 홈: 원형 시계 카드 */

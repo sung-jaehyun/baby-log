@@ -589,24 +589,26 @@ function statusCard(st) {
   const nm = babyName(), cs = charState();
   const badge = { sleep: '🌙', feed: '🍼', bath: '🛁', awake: '☀️' }[cs];
   const ph = `<div class="ph">${photoOr('hero', ART.chars[cs])}<span class="badge">${badge}</span></div>`;
-  const tile = (cls, ico, name, k, v, pct, color, n) => `<div class="tile t${cls}"><div class="hd"><i>${ART.icons[ico]}</i>${name}</div>
-    <div class="k">${k}</div><div class="v">${v}</div>${pct == null ? '' : `<div class="bar2"><b style="width:${pct.toFixed(1)}%;background:${color}"></b></div>`}<div class="n">${n}</div></div>`;
+  // 상태 카드: 왼쪽에 큰 사진(캐릭터), 오른쪽에 제목 + 잠·수유 칸(위아래). 칸은 [아이콘 이름 … 경과 시간] / 막대 / 예상 시각
+  const phBig = `<div class="ph big">${photoOr('hero', ART.chars[cs])}<span class="badge">${badge}</span></div>`;
+  const tile = (cls, ico, name, v, pct, color, n) => `<div class="tile t${cls}"><div class="hd"><i>${ART.icons[ico]}</i><span class="nm">${name}</span><b class="v">${v}</b></div>
+    ${pct == null ? '' : `<div class="bar2"><b style="width:${pct.toFixed(1)}%;background:${color}"></b></div>`}<div class="n">${n}</div></div>`;
   const none = (cls, ico, name, msg) => `<div class="tile t${cls} empty-t"><div class="hd"><i>${ART.icons[ico]}</i>${name}</div><div class="v">${msg}</div></div>`;
   const fi = st.feedInfo;
-  const feedT = fi ? tile('F', 'feed', '수유', '마지막 수유 후', minShort(fi.el), fi.pct, fi.color === 'var(--nap)' ? 'var(--feed)' : fi.color, `다음 수유 ${hm(fi.pred)}쯤`)
+  const feedT = fi ? tile('F', 'feed', '수유한 지', minShort(fi.el), fi.pct, fi.color === 'var(--nap)' ? 'var(--feed)' : fi.color, `다음 수유 ${hm(fi.pred)}쯤`)
     : none('F', 'feed', '수유', '기록이 아직 없어요');
-  const card = (title, tag, sub, sleepT) => `<div class="hero"><div class="hrow">${ph}<div style="flex:1;min-width:0">
-      <div class="st">${title}${tag ? `<span class="tag2">${tag}</span>` : ''}</div><div class="st-sub">${sub}</div></div></div>
-    ${sleepT === null ? '' : `<div class="tiles">${sleepT}${feedT}</div>`}</div>`;
+  const card = (title, tag, sub, sleepT) => `<div class="hero"><div class="hbody">${phBig}<div class="hright">
+      <div><div class="st">${title}${tag ? `<span class="tag2">${tag}</span>` : ''}</div><div class="st-sub">${sub}</div></div>
+      <div class="tiles">${sleepT}${feedT}</div></div></div></div>`;
   const who = esc(josa(nm, '은', '는'));
   if (st.mode === 'night') {
     return card(`${who} 밤잠 자는 중`, '🌙 밤잠', `${hm(st.open.start)} 잠듦 · 오늘 밤 ${minTxt(st.tot)}`,
-      tile('S', 'sleep', '잠', '잠든 지', minShort(st.el), st.pct, 'var(--night)', `기상 목표 ${hm(st.wakeAt)}`));
+      tile('S', 'sleep', '잠든 지', minShort(st.el), st.pct, 'var(--night)', `기상 목표 ${hm(st.wakeAt)}`));
   }
   if (st.mode === 'nap') {
     return card(`${who} 낮잠${st.idx} 자는 중`, '🌙 낮잠', `${hm(st.open.start)} 잠듦${st.target ? ` · ${st.max ? `최대 ${minTxt(st.max)}` : `목표 ${minTxt(st.target)}`}` : ''}`,
-      st.target ? tile('S', 'sleep', '잠', '잠든 지', minShort(st.el), st.pct, st.color, `${hm(st.pred)}쯤 깸 예상`)
-        : tile('S', 'sleep', '잠', '잠든 지', minShort(st.el), null, '', '일정표에 없는 잠'));
+      st.target ? tile('S', 'sleep', '잠든 지', minShort(st.el), st.pct, st.color, `${hm(st.pred)}쯤 깸 예상`)
+        : tile('S', 'sleep', '잠든 지', minShort(st.el), null, '', '일정표에 없는 잠'));
   }
   if (st.mode === 'nodata' && S.loading) {
     return `<div class="hero"><div class="hrow">${ph}<div style="flex:1"><div class="st">기록을 불러오는 중…</div><div class="bar2" style="background:rgba(255,255,255,.3)"><b class="loadbar"></b></div></div></div></div>`;
@@ -614,10 +616,10 @@ function statusCard(st) {
   if (st.mode === 'nodata') return card('반가워요', '', '잠·수유를 기록하면 다음 할 일을 계산해드려요', none('S', 'sleep', '잠', '기록이 아직 없어요'));
   if (st.mode === 'nightwake') {
     return card('밤중에 깼어요', '🌙 밤중', `${hm(st.last.end)} 깸 · 다시 재우면 "잠 시작"`,
-      tile('S', 'wake', '잠', '깬 지', minShort(st.el), null, '', '다시 재우면 잠 시작'));
+      tile('S', 'wake', '잠에서 깬 지', minShort(st.el), null, '', '다시 재우면 잠 시작'));
   }
   return card(`${who} 지금 깨어 있어요`, '☀️ 깸', `${st.last ? '마지막 깨시' : `${st.n}번째 깨시`} · 목표 ${minShort(st.target)}`,
-    tile('S', 'sleep', '잠', '깨어 있은 지', minShort(st.el), st.pct, st.color === 'var(--nap)' ? 'var(--accent)' : st.color, `${st.next} ${hm(st.pred)}쯤`));
+    tile('S', 'sleep', '잠에서 깬 지', minShort(st.el), st.pct, st.color === 'var(--nap)' ? 'var(--accent)' : st.color, `${st.next} ${hm(st.pred)}쯤`));
 }
 
 /* 오늘 남은 일정: 다음 잠·다음 수유는 실제 기록으로 다시 계산한 시각, 그 뒤는 일정표 시각 */
