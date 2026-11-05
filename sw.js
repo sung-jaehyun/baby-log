@@ -1,6 +1,6 @@
 // 앱 화면 파일을 휴대폰에 저장해 두고 바로 띄운다(기록 데이터는 여기서 다루지 않음).
 // 배포할 때마다 VERSION을 바꾸면 새 파일 묶음을 통째로 받아 한 번에 교체한다(옛 파일과 섞이지 않게).
-const VERSION = 'v20261105-103743';
+const VERSION = 'v20261105-135452';
 // 글씨 파일은 쓰는 글자 조각만 그때그때 받아 따로 보관한다(앱 버전이 바뀌어도 다시 받지 않음)
 const FONTS = 'fonts-v1';
 const SHELL = ['./', 'index.html', 'style.css', 'config.js', 'art.js', 'demo.js', 'growth-data.js', 'growth.js', 'look.js', 'app.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png'];
