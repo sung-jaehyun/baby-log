@@ -89,38 +89,53 @@ function live() {
 async function call(action, data, auth = S.auth) {
   if (!auth) { const e = new Error('로그인이 필요해요'); e.code = 'pin'; throw e; }
   if (auth.url === 'demo') {
-    try { const j = await DEMO.call(action, data, auth.pin); S.api = j.api || 1; seenReset(j.reset); return j; } catch (e) { e.pinUsed = auth.pin; throw e; }
+    const t0 = Date.now();
+    try { const j = await DEMO.call(action, data, auth.pin); S.api = j.api || 1; gotMeta(j, t0); return j; } catch (e) { e.pinUsed = auth.pin; throw e; }
   }
   const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), 40000);
+  const t = setTimeout(() => ctrl.abort(), 40000), t0 = Date.now();
   try {
     const res = await fetch(auth.url, { method: 'POST', body: JSON.stringify({ action, pin: auth.pin, data }), headers: { 'Content-Type': 'text/plain;charset=utf-8' }, redirect: 'follow', signal: ctrl.signal });
     const j = await res.json();
     if (!j.ok) { const e = new Error(j.err || '서버 오류'); e.server = true; e.code = j.code || 'error'; e.pinUsed = auth.pin; throw e; }
     S.api = j.api || 1;
-    seenReset(j.reset);
+    gotMeta(j, t0);
     return j;
   } finally { clearTimeout(t); }
 }
 /* 관리자가 기록을 지우면(서버의 reset 시각이 바뀌면) 이 휴대폰 저장본도 비우고 새로 받는다.
    지우기 전에 만든 저장 대기 기록은 버린다(서버도 받지 않음). 지운 뒤에 만든 것만 남긴다. */
-function seenReset(t) {
+function seenReset(t, scope, quiet) {
   if (t == null || !S.auth) return;
   t = Number(t) || 0;
   const known = LS.get('resetAt', null);
   if (known === t) return;
+  if (known != null && t < known) return;   // 늦게 도착한 옛 응답: 무시
   LS.set('resetAt', t);
-  if (known == null && t === 0) return;   // 지운 적 없음
-  if (known != null && t < known) return;
-  const after = (o) => Number(o.at) > t;
-  S.queue = S.queue.filter(after); S.failed = S.failed.filter(after);
+  if (t === 0) return;   // 지운 적 없음
+  // 지우기 전에 만든 '새 기록'·'하루 메모'만 버린다(수정·삭제는 서버가 판단). 매일 기록만 지웠으면 성장 기록은 남김
+  const skew = S.skew || 0, keepGrowth = scope !== 'all';
+  const stale = (o) => {
+    if (o.op !== 'add' && o.op !== 'memo') return false;
+    if (o.op === 'add' && keepGrowth && o.rec && GROWTH_ONLY.has(o.rec.type)) return false;
+    const ts = Number(o.at || (o.rec && o.rec.created) || 0);
+    return ts ? ts + skew <= t : o.op === 'add';
+  };
+  S.queue = S.queue.filter((o) => !stale(o)); S.failed = S.failed.filter((o) => !stale(o));
+  saveQueue();
+  if (quiet) return;   // 로그인 직후: 곧 전체를 새로 받으므로 기억만
   const keep = new Set(S.queue.map((q) => q.id));
   Object.keys(S.recs).forEach((id) => { if (!keep.has(id)) delete S.recs[id]; });
   Object.keys(S.memos).forEach((k) => { if (!keep.has(k)) delete S.memos[k]; });
-  S.serverTime = 0; S.loadedFrom = 0; S.rev = 0; S.wipeN = (S.wipeN || 0) + 1;
-  dirty(); saveQueue(); writeCache();
+  S.serverTime = 0; S.loadedFrom = 0; S.rev = 0; S.wipeN = (S.wipeN || 0) + 1; S.loading = true;
+  dirty(); writeCache();
   if (known != null && !S.resetting) note('관리자가 기록을 지웠어요. 새로 불러올게요.');
-  (function again() { if (syncing) setTimeout(again, 400); else sync(true).finally(() => bgRender()); })();
+  (function again() { if (syncing) setTimeout(again, 400); else sync(true).finally(() => { S.loading = false; bgRender(); }); })();
+}
+/* 응답마다: 서버 시계와의 차이(기록 지우기 판단용), 기록 지우기 여부 */
+function gotMeta(j, t0) {
+  if (j.now) S.skew = j.now - (t0 + Date.now()) / 2;
+  seenReset(j.reset, j.resetScope);
 }
 const errMsg = (e) => (e.server ? e.message : '연결이 안 돼요. 잠시 후 다시 해주세요.');
 /* 지금 쓰는 PIN으로 보낸 요청이 거절됐을 때만 로그아웃(내가 PIN을 바꾸는 중 엇갈린 요청은 무시) */
@@ -222,8 +237,9 @@ async function flush() {
       const ops = S.queue.slice(0, 25);
       ops.forEach((o) => { o.sending = true; });
       let j;
+      const wipe0 = S.wipeN || 0;
       try {
-        j = await call('batch', { ops: ops.map((o) => ({ op: o.op, id: o.id, rec: o.rec, text: o.text, at: o.at })) });
+        j = await call('batch', { now: Date.now(), ops: ops.map((o) => ({ op: o.op, id: o.id, rec: o.rec, text: o.text, at: o.at })) });
       } catch (e) {
         ops.forEach((o) => { o.sending = false; });
         saveQueue();
@@ -243,13 +259,15 @@ async function flush() {
         o.sending = false;
         if (r.ok) {
           done.add(o);
-          if (r.rec && !S.queue.some((x) => x !== o && x.id === o.id)) {
+          // 응답 도중 기록 지우기를 알게 됐으면, 옛 사본을 화면에 되살리지 않는다(곧 전체를 새로 받음)
+          if (r.rec && (S.wipeN || 0) === wipe0 && !S.queue.some((x) => x !== o && x.id === o.id)) {
             // 이 기기에서 고친 시각 표시는 유지: 동시에 진행 중이던 옛 동기화 응답이 덮어쓰지 못하게
             const prev = S.recs[r.rec.id];
             if (prev && prev._local) r.rec._local = prev._local;
             S.recs[r.rec.id] = r.rec; dirty();
           }
         } else if (r.code === 'reset') done.add(o);   // 기록 지우기 전에 만든 변경: 버림
+        else if (r.code === 'notfound' && (o.op === 'update' || o.op === 'remove') && LS.get('resetAt', 0) > 0) done.add(o);   // 지워진 기록을 고친 것: 버림
         else if (r.code === 'retry') again = true;
         else {
           o.tries = (o.tries || 0) + 1;
@@ -1028,7 +1046,7 @@ function viewSettings() {
     <div class="prev"><span>마지막 수유 후</span><b style="font-size:21px">1:12</b></div></div></div>
   <div class="note2">사진·테마·글씨는 이 휴대폰에만 적용돼요</div>
   <div class="gh">아기</div>
-  <div class="grp">${row('이름', esc(set('babyName') || '우리 아기'), 'setName')}${row('생일', b ? b.replace(/-/g, '. ').replace(/\. 0/g, '. ') : '-', 'setBirth')}</div>
+  <div class="grp">${row('이름', esc(set('babyName') || '우리 아기'), 'setName')}${row('생일', b ? esc(b.replace(/-/g, '. ').replace(/\. 0/g, '. ')) : '-', 'setBirth')}</div>
   <div class="gh">기록 기준</div>
   <div class="grp">${row('일정표', esc(cur ? cur.name : '-'), 'setPlan', cur ? `${esc(cur.from)}부터 적용` : '')}
     ${row('분유 자주 쓰는 양', esc(String(set('feedPresets')).replace(/,/g, '·')), 'setPresets')}
@@ -1187,6 +1205,10 @@ function resetSheet() {
       b.disabled = true; b.textContent = '지우는 중…'; S.resetting = true;
       try {
         if (S.queue.length) await flush();   // 지우기 전 기록까지 먼저 올려서 백업에 들어가게
+        if (S.queue.length || S.failed.length) {
+          b.disabled = false; b.textContent = '기록 지우기';
+          note(S.failed.length ? '저장 못 한 기록이 있어요. 설정에서 먼저 정리해주세요.' : '아직 올라가지 않은 기록이 있어요. 인터넷 연결 후 다시 해주세요.'); return;
+        }
         const j = await call('resetRecords', { scope, pin: $('#rp').value.trim(), confirm: '지우기' });
         closeSheet(); S.tab = 'home'; render();
         note(`지웠어요 · 백업: ${j.data.backup}`);
@@ -1238,6 +1260,7 @@ async function tryLogin() {
     auth.user = j.user;
     const sameServer = LS.get('lastUrl', '') === url;
     S.auth = auth; LS.set('auth', auth); LS.set('lastUrl', url);
+    seenReset(j.reset, j.resetScope, true);
     if (!sameServer || !loadCache()) { S.serverTime = 0; S.recs = {}; dirty(); S.loading = true; }
     S.tab = 'home'; render(true);
     sync(true).finally(() => { if (S.loading) { S.loading = false; render(); } });
@@ -1369,6 +1392,7 @@ async function dupCheck(type, fn) {
 }
 const LABEL = { bath: '목욕', walk: '산책' };
 
+let lookT = 0;
 const ACTIONS = {
   tab(el) {
     S.tab = el.dataset.tab;
@@ -1388,7 +1412,8 @@ const ACTIONS = {
   look(el) {
     // 화면 전체를 다시 그리지 않고 고른 표시만 바꾼다(글씨체가 바뀌면 다시 그리기가 무거움)
     const k = el.dataset.k, v = el.dataset.v;
-    LOOK.set(k, v);
+    // 글씨체는 화면 전체 글자를 다시 배치해야 해서 무거움: 고른 표시를 먼저 보여주고 바로 다음에 적용
+    if (k === 'font') { LOOK.set(k, v, true); clearTimeout(lookT); lookT = setTimeout(() => LOOK.apply(), 60); } else LOOK.set(k, v);
     document.querySelectorAll(`[data-act="look"][data-k="${k}"]`).forEach((b) => {
       const on = b.dataset.v === v;
       b.classList.toggle('on', on);
@@ -1770,7 +1795,9 @@ async function ensureRange(key) {
   const from = dstart(addDays(key, -30)), to = S.loadedFrom;
   rangeLoading = (async () => {
     try {
+      const w0 = S.wipeN || 0;
       const j = await call('range', { from, to });
+      if ((S.wipeN || 0) !== w0) return;   // 응답 도중 기록 지우기: 옛 기록을 되살리지 않음
       mergeRecs(j.data.recs); S.loadedFrom = Math.min(S.loadedFrom, from); bgRender();
     } catch (e) { note('지난 기록을 불러오지 못했어요'); }
   })();

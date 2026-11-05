@@ -46,7 +46,7 @@ const LOOK = (() => {
     root.style.zoom = size().z === 1 ? '' : String(size().z);
     const m = document.querySelector('meta[name="theme-color"]'); if (m) m.setAttribute('content', t.bar);
   }
-  function set(k, v) { cur[k] = v; write('look', JSON.stringify(cur)); apply(); }
+  function set(k, v, later) { cur[k] = v; write('look', JSON.stringify(cur)); if (!later) apply(); }
 
   /* 사진: 정사각형으로 잘라 줄여서 저장(약 20KB) */
   function photo(slot) {
