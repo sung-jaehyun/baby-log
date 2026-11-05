@@ -89,17 +89,62 @@ function live() {
 async function call(action, data, auth = S.auth) {
   if (!auth) { const e = new Error('로그인이 필요해요'); e.code = 'pin'; throw e; }
   if (auth.url === 'demo') {
-    try { const j = await DEMO.call(action, data, auth.pin); S.api = j.api || 1; return j; } catch (e) { e.pinUsed = auth.pin; throw e; }
+    const t0 = Date.now();
+    try { const j = await DEMO.call(action, data, auth.pin); S.api = j.api || 1; gotMeta(j, t0); return j; } catch (e) { e.pinUsed = auth.pin; throw e; }
   }
   const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), 40000);
+  const t = setTimeout(() => ctrl.abort(), 40000), t0 = Date.now();
   try {
     const res = await fetch(auth.url, { method: 'POST', body: JSON.stringify({ action, pin: auth.pin, data }), headers: { 'Content-Type': 'text/plain;charset=utf-8' }, redirect: 'follow', signal: ctrl.signal });
     const j = await res.json();
     if (!j.ok) { const e = new Error(j.err || '서버 오류'); e.server = true; e.code = j.code || 'error'; e.pinUsed = auth.pin; throw e; }
     S.api = j.api || 1;
+    gotMeta(j, t0);
     return j;
   } finally { clearTimeout(t); }
+}
+/* 관리자가 기록을 지우면(서버의 reset 시각이 바뀌면) 이 휴대폰 저장본도 비우고 새로 받는다.
+   지우기 전에 만든 저장 대기 기록은 버린다(서버도 받지 않음). 지운 뒤에 만든 것만 남긴다. */
+/* 서버마다 따로 기억(데모 ↔ 실제 서버를 바꿔도 섞이지 않게) */
+const resetKey = () => `resetAt:${S.auth ? S.auth.url : ''}`;
+function seenReset(t, scope, quiet) {
+  if (t == null || !S.auth) return;
+  t = Number(t) || 0;
+  const known = LS.get(resetKey(), null);
+  if (known === t) return;
+  if (known != null && t < known) return;   // 늦게 도착한 옛 응답: 무시
+  LS.set(resetKey(), t);
+  if (t === 0) return;   // 지운 적 없음
+  // 지우기 전에 만든 '새 기록'·'하루 메모'만 버린다(수정·삭제는 서버가 판단). 매일 기록만 지웠으면 성장 기록은 남김
+  const skew = S.skew || 0, keepGrowth = scope !== 'all';
+  const stale = (o) => {
+    if (o.op !== 'add' && o.op !== 'memo') return false;
+    if (o.op === 'add' && keepGrowth && o.rec && GROWTH_ONLY.has(o.rec.type)) return false;
+    const ts = Number(o.at || (o.rec && o.rec.created) || 0);
+    return ts ? ts + skew <= t : o.op === 'add';
+  };
+  S.queue = S.queue.filter((o) => !stale(o)); S.failed = S.failed.filter((o) => !stale(o));
+  saveQueue();
+  if (quiet) return;   // 로그인 직후: 곧 전체를 새로 받으므로 기억만
+  const keep = new Set(S.queue.map((q) => q.id));
+  Object.keys(S.recs).forEach((id) => { if (!keep.has(id)) delete S.recs[id]; });
+  Object.keys(S.memos).forEach((k) => { if (!keep.has(k)) delete S.memos[k]; });
+  S.serverTime = 0; S.loadedFrom = 0; S.rev = 0; S.wipeN = (S.wipeN || 0) + 1; S.loading = true;
+  dirty(); writeCache();
+  if (known != null && !S.resetting) note('관리자가 기록을 지웠어요. 새로 불러올게요.');
+  (function again() { if (syncing) setTimeout(again, 400); else sync(true).finally(() => { S.loading = false; bgRender(); }); })();
+}
+/* 응답마다: 서버 시계와의 차이(기록 지우기 판단용), 기록 지우기 여부 */
+function gotMeta(j, t0) {
+  if (j.now) S.skew = j.now - (t0 + Date.now()) / 2;
+  seenReset(j.reset, j.resetScope);
+}
+/* 이 기록이 마지막 기록 지우기 전에 만든 것인가(그렇다면 서버에서 지워진 것) */
+function wipedRec(id) {
+  const t = LS.get(resetKey(), 0), r = S.recs[id];
+  if (!t || !r) return false;
+  const ts = Number(r.created || r.start || 0);
+  return ts > 0 && ts + (S.skew || 0) <= t;
 }
 const errMsg = (e) => (e.server ? e.message : '연결이 안 돼요. 잠시 후 다시 해주세요.');
 /* 지금 쓰는 PIN으로 보낸 요청이 거절됐을 때만 로그아웃(내가 PIN을 바꾸는 중 엇갈린 요청은 무시) */
@@ -121,13 +166,15 @@ function authFailed(msg) {
   render(true);
   const m = $('#loginMsg'); if (m) m.textContent = msg || 'PIN이 바뀌었거나 사용이 중지됐어요. 다시 입력해주세요.';
 }
-function applyMeta(d) {
+function applyMeta(d, full) {
   if (d.settings) S.settings = d.settings;
   if (d.plans) S.plans = d.plans;
   if (d.apply) S.apply = d.apply;
   if (d.users) S.users = d.users;
   if (d.memos) {
     const busy = new Set(S.queue.filter((q) => q.op === 'memo').map((q) => q.id));
+    // 전체를 받을 때는 서버에 없는 메모(지워진 것)를 빼고 서버 것으로 맞춤. 아직 올라가지 않은 메모만 남김
+    if (full) Object.keys(S.memos).forEach((k) => { if (!busy.has(k) && !(k in d.memos)) delete S.memos[k]; });
     Object.keys(d.memos).forEach((k) => { if (!busy.has(k)) S.memos[k] = d.memos[k]; });
   }
 }
@@ -141,9 +188,10 @@ async function sync(full) {
     if (!S.auth) return;
     if (S.pinChanging) return;
     const isFull = full || !S.serverTime;
-    const sentAt = Date.now();
+    const sentAt = Date.now(), wipe0 = S.wipeN || 0;
     const j = isFull ? await call('load', {}) : await call('sync', { since: S.serverTime - 3 * MIN, rev: S.rev || 0 });
     if (!S.auth) return;
+    if ((S.wipeN || 0) !== wipe0) return;   // 응답 도중 기록 지우기를 알게 됨: 이 응답은 버리고 새로 전체를 받음
     lastSync = Date.now();
     if ((!j.api || j.api < 3) && S.auth.url !== 'demo' && !S.apiWarned) { S.apiWarned = true; note('서버 코드를 새 버전으로 배포해주세요 (성장 기록 보관)'); }
     if (!isFull && j.data.same) { S.rev = j.rev; return; }
@@ -153,7 +201,7 @@ async function sync(full) {
       Object.keys(S.recs).forEach((id) => { const r = S.recs[id]; if (!keep.has(id) && !(r._local && r._local >= sentAt) && !(oldServer && LONG_TYPES.has(r.type))) delete S.recs[id]; });
       S.loadedFrom = j.now - 45 * DAY;
     }
-    applyMeta(j.data);
+    applyMeta(j.data, isFull);
     mergeRecs(j.data.recs || [], sentAt);
     S.serverTime = j.now; S.rev = j.rev;
     if (j.user && j.user !== S.auth.user) { S.auth.user = j.user; LS.set('auth', S.auth); }
@@ -168,6 +216,7 @@ function quickSync() { if (Date.now() - lastSync > 15000) sync(); }
 
 /* 기록 저장 대기열: 같은 기록에 대한 변경은 합쳐서 보낸다 */
 function enqueue(op) {
+  op.at = Date.now();   // 만든 시각: 기록 지우기 전에 만든 것인지 서버가 판단
   const q = S.queue;
   if (op.op === 'update') {
     const add = q.find((x) => x.op === 'add' && x.id === op.id && !x.sending);
@@ -182,7 +231,7 @@ function enqueue(op) {
     else { S.queue = q.filter((x) => !(x.op === 'update' && x.id === op.id && !x.sending)); S.queue.push(op); }
   } else if (op.op === 'memo') {
     const m = q.find((x) => x.op === 'memo' && x.id === op.id && !x.sending);
-    if (m) m.text = op.text; else q.push(op);
+    if (m) { m.text = op.text; m.at = op.at; } else q.push(op);
   } else q.push(op);
   LS.set('queue', S.queue);
   scheduleFlush();
@@ -199,8 +248,9 @@ async function flush() {
       const ops = S.queue.slice(0, 25);
       ops.forEach((o) => { o.sending = true; });
       let j;
+      const wipe0 = S.wipeN || 0;
       try {
-        j = await call('batch', { ops: ops.map((o) => ({ op: o.op, id: o.id, rec: o.rec, text: o.text })) });
+        j = await call('batch', { now: Date.now(), ops: ops.map((o) => ({ op: o.op, id: o.id, rec: o.rec, text: o.text, at: o.at })) });
       } catch (e) {
         ops.forEach((o) => { o.sending = false; });
         saveQueue();
@@ -220,13 +270,16 @@ async function flush() {
         o.sending = false;
         if (r.ok) {
           done.add(o);
-          if (r.rec && !S.queue.some((x) => x !== o && x.id === o.id)) {
+          // 응답 도중 기록 지우기를 알게 됐으면, 옛 사본을 화면에 되살리지 않는다(곧 전체를 새로 받음)
+          if (r.rec && (S.wipeN || 0) === wipe0 && !S.queue.some((x) => x !== o && x.id === o.id)) {
             // 이 기기에서 고친 시각 표시는 유지: 동시에 진행 중이던 옛 동기화 응답이 덮어쓰지 못하게
             const prev = S.recs[r.rec.id];
             if (prev && prev._local) r.rec._local = prev._local;
             S.recs[r.rec.id] = r.rec; dirty();
           }
-        } else if (r.code === 'retry') again = true;
+        } else if (r.code === 'reset') done.add(o);   // 기록 지우기 전에 만든 변경: 버림
+        else if (r.code === 'notfound' && (o.op === 'update' || o.op === 'remove') && wipedRec(o.id)) done.add(o);   // 기록 지우기로 없어진 기록을 고친 것: 버림
+        else if (r.code === 'retry') again = true;
         else {
           o.tries = (o.tries || 0) + 1;
           if (o.tries >= 5) { done.add(o); S.failed.push(Object.assign({}, o, { err: r.err })); note('저장 못 한 기록이 있어요. 설정에서 확인해주세요.'); }
@@ -409,14 +462,17 @@ function recText(r) {
     default: return { t: TYPES[r.type] ? TYPES[r.type].n : r.type, c: (TYPES[r.type] || {}).c };
   }
 }
+const TINT = { feed: 't-feed', sleep: 't-sleep', diaper: 't-diaper', bath: 't-bath', walk: 't-bath', food: 't-feed' };
+const recIcon = (r) => `<span class="ic ${TINT[r.type] || 't-other'}">${ART.icons[r.type === 'sleep' && !r.end ? 'sleep' : (TYPES[r.type] || {}).i || 'memo']}</span>`;
+/* 기록 한 줄 (누가 기록했는지는 화면에 보이지 않음) */
 function recItem(r) {
   const x = recText(r);
-  const ic = ART.icons[r.type === 'sleep' && !r.end ? 'sleep' : (TYPES[r.type] || {}).i || 'memo'];
   const memo = r.type !== 'memo' && r.memo ? `<small>${esc(r.memo)}</small>` : '';
+  const hot = x.c === 'c-danger' || x.c === 'c-over' ? x.c : '';
   return `<button class="item" data-act="edit" data-id="${esc(r.id)}">
-    <span class="t">${hm(r.start)}</span><span class="ico">${ic}</span>
-    <span class="what"><span class="${x.c}">${esc(x.t)}</span>${x.sub ? `<small>${esc(x.sub)}</small>` : ''}${memo}</span>
-    ${x.warn ? '<span class="tag warn-tag">확인 필요</span>' : ''}<span class="tag">${esc(r.by || '')}</span></button>`;
+    <span class="t">${hm(r.start)}</span>${recIcon(r)}
+    <span class="what"><span class="${hot}">${esc(x.t)}</span>${x.sub ? `<small>${esc(x.sub)}</small>` : ''}${memo}</span>
+    ${x.warn ? '<span class="tag warn-tag">확인 필요</span>' : ''}</button>`;
 }
 
 /* ---------- 화면 ---------- */
@@ -446,33 +502,69 @@ function render(force) {
   const v = { home: viewHome, day: viewDay, pattern: viewPattern, growth: viewGrowth, settings: viewSettings }[S.tab] || viewHome;
   const same = S.tab === S._lastTab, y = window.scrollY;
   root.innerHTML = v();
+  if (S.tab === 'home') fitClock();
   if (same && y) window.scrollTo(0, y);   // 같은 화면을 새로 그릴 때 스크롤 위치 유지
   S._lastTab = S.tab;
   renderTabs();
 }
 function renderTabs() {
   const t = [['home', '홈'], ['day', '하루'], ['pattern', '패턴'], ['growth', '성장']];
-  $('#tabs').innerHTML = `<div class="in">${t.map(([k, n]) => `<button data-act="tab" data-tab="${k}" class="${S.tab === k ? 'on' : ''}">${ART.icons[k === 'day' ? 'day' : k]}${n}</button>`).join('')}</div>`;
+  const html = `<div class="in">${t.map(([k, n]) => `<button data-act="tab" data-tab="${k}" class="${S.tab === k ? 'on' : ''}">${ART.icons[k === 'day' ? 'day' : k]}${n}</button>`).join('')}</div>`;
+  const el = $('#tabs');
+  if (el._html !== html) { el.innerHTML = html; el._html = html; }
+}
+/* 홈은 한 화면에 들어오게: 남는 높이만큼 원형 시계를 키우고, 모자라면 줄인다(110~210px) */
+function fitClock() {
+  const app = $('#app'), c = $('.ccard .clk');
+  if (!c) return;
+  const z = Number(document.documentElement.style.zoom) || 1;
+  // #app 아래 여백이 하단 탭 높이만큼이라, 여백까지 포함해 화면 높이에 맞추면 탭에 가리지 않는다
+  for (let i = 0; i < 3; i++) {
+    const room = window.innerHeight / z - (app.offsetTop + app.offsetHeight);
+    const cur = c.offsetHeight;
+    const next = Math.round(Math.max(110, Math.min(210, cur + room)));
+    if (Math.abs(next - cur) < 2) break;
+    app.style.setProperty('--cs', `${next}px`);
+  }
+}
+// 글씨 파일이 늦게 도착하면 글자 크기가 바뀌므로 다시 맞춤
+if (document.fonts && document.fonts.addEventListener) document.fonts.addEventListener('loadingdone', () => { if (S.auth && S.tab === 'home') fitClock(); });
+let resizeT = 0;
+window.addEventListener('resize', () => { clearTimeout(resizeT); resizeT = setTimeout(() => { if (S.auth && S.tab === 'home') bgRender(); }, 200); });
+
+const photoOr = (slot, svg) => { const p = LOOK.photo(slot); return p ? `<img src="${p}" alt="">` : svg; };
+/* 받침: 은우는 / 하준이는 */
+const josa = (w, a, b) => { const c = String(w).charCodeAt(String(w).length - 1); return w + (c >= 0xAC00 && c <= 0xD7A3 && (c - 0xAC00) % 28 ? a : b); };
+function ageTxt(key) {
+  const a = babyAge(key);
+  if (!a) return '설정에서 생일을 입력해주세요';
+  const d = Math.round((dstart(key) - dstart(addMonths(set('birthDate'), a.months))) / DAY);
+  return `${a.months}개월 ${d}일 · ${a.n}일째`;
 }
 function header() {
-  const a = babyAge(dkey(Date.now()));
-  return `<div class="top"><div class="avatar">${ART.chars[charState()]}</div>
-    <div><div class="name">${esc(babyName())}</div><div class="age">${a ? `${a.months}개월 · ${a.n}일째` : '설정에서 생일을 입력해주세요'}</div></div>
+  return `<div class="top"><div class="avatar">${photoOr('avatar', ART.chars[charState()])}</div>
+    <div><div class="name">${esc(babyName())}</div><div class="age">${ageTxt(dkey(Date.now()))}</div></div>
     <button class="gear" data-act="tab" data-tab="settings" aria-label="설정">${ART.icons.gear}</button></div>`;
 }
 
 function viewHome() {
   const st = statusInfo();
-  const today = dkey(Date.now()), yest = addDays(today, -1);
-  const sm = daySummary(today), ns = nightStats(set('nightMode') === 'midnight' ? today : yest);
-  const recent = live().filter((r) => !GROWTH_ONLY.has(r.type)).slice(-3).reverse();
+  const today = dkey(Date.now()), yest = addDays(today, -1), mid = set('nightMode') === 'midnight';
+  const sm = daySummary(today), ns = nightStats(mid ? today : yest);
   const open = openSleep();
-  return `${header()}${statusCard(st)}
+  const last = live().filter((r) => !GROWTH_ONLY.has(r.type)).pop();
+  return `<div class="home">${header()}${statusCard(st)}
+  <button class="card ccard" data-act="tab" data-tab="day"><div class="clk">${clockSvg(today, sm, true)}</div>
+    <div class="leg"><div><span><i style="background:var(--feed)"></i>수유</span>${sm.feedN}회 · ${sm.feedMl}ml</div>
+      <div><span><i style="background:var(--nap)"></i>낮잠</span>${sm.napN}회 · ${minShort(sm.napMin)}</div>
+      <div><span><i style="background:var(--night)"></i>${mid ? '오늘 밤잠' : '어젯밤'}</span>${ns.tot ? minShort(ns.tot) : '-'}</div>
+      <div><span><i style="background:var(--diaper)"></i>기저귀</span>소${sm.pee} · 대${sm.poo}</div>
+      <div class="go">하루 탭에서 자세히 →</div></div></button>
   <div class="btns">
-    <button class="btn-big b-feed" data-act="feed">${ART.icons.feed}분유</button>
-    <button class="btn-big b-sleep ${open ? 'on' : ''}" data-act="sleep">${open ? ART.icons.wake + '깸' : ART.icons.sleep + '잠 시작'}</button>
-    <button class="btn-big b-diaper" data-act="diaper">${ART.icons.diaper}기저귀</button>
-    <button class="btn-big b-bath" data-act="quick" data-type="bath">${ART.icons.bath}목욕</button>
+    <button class="btn-big" data-act="feed"><span class="ic t-feed">${ART.icons.feed}</span>분유</button>
+    <button class="btn-big ${open ? 'on' : ''}" data-act="sleep"><span class="ic t-sleep">${open ? ART.icons.wake : ART.icons.sleep}</span>${open ? '깸' : '잠 시작'}</button>
+    <button class="btn-big" data-act="diaper"><span class="ic t-diaper">${ART.icons.diaper}</span>기저귀</button>
+    <button class="btn-big" data-act="quick" data-type="bath"><span class="ic t-bath">${ART.icons.bath}</span>목욕</button>
   </div>
   <div class="smalls">
     <button class="btn-sm" data-act="temp">${ART.icons.temp}체온</button>
@@ -481,58 +573,100 @@ function viewHome() {
     <button class="btn-sm" data-act="memo">${ART.icons.memo}메모</button>
     ${set('showFood') === 'true' ? `<button class="btn-sm" data-act="food">${ART.icons.food}이유식</button>` : ''}
   </div>
-  <div class="card sum">
-    <div><div class="lbl">수유</div><div class="v c-feed">${sm.feedN}회 · ${sm.feedMl}</div></div>
-    <div><div class="lbl">낮잠</div><div class="v c-nap">${sm.napN}회 · ${minShort(sm.napMin)}</div></div>
-    <div><div class="lbl">${set('nightMode') === 'midnight' ? '오늘 밤잠' : '어젯밤'}</div><div class="v c-night">${ns.tot ? minShort(ns.tot) : '-'}</div></div>
-    <div><div class="lbl">기저귀</div><div class="v c-diaper">소${sm.pee} · 대${sm.poo}</div></div>
-  </div>
-  <div class="card list">${recent.length ? recent.map(recItem).join('') : '<div class="empty">아직 기록이 없어요. 위 버튼을 눌러 시작해보세요.</div>'}
-    <button class="more" data-act="tab" data-tab="day">오늘 기록 전체 보기 →</button></div>
-  ${S.queue.length ? `<div class="lbl" style="text-align:center">저장 대기 ${S.queue.length}건 · 연결되면 자동으로 올라가요</div>` : ''}`;
+  ${planStrip(st)}
+  ${last ? lastCard(last) : ''}
+  ${homeAlerts()}
+  ${S.queue.length ? `<div class="pending">저장 대기 ${S.queue.length}건 · 연결되면 자동으로 올라가요</div>` : ''}</div>`;
 }
 
 function statusCard(st) {
-  const char = `<div class="char">${ART.chars[charState()]}</div>`;
-  const feed = st.feedInfo ? `<div class="subcard"><div class="substat"><span class="lbl">마지막 수유 후</span><span class="lbl">${st.poo ? `대변 ${agoTxt(st.poo.start)}` : ''}</span>
-      <span class="feedtxt">${minTxt(st.feedInfo.el)}</span><span></span></div>
-      <div class="bar"><i style="width:${st.feedInfo.pct}%;background:${st.feedInfo.color === 'var(--nap)' ? 'var(--feed)' : st.feedInfo.color}"></i></div>
-      <div class="row2"><span>목표 간격 ${minTxt(st.feedInfo.target)}</span><span><b>수유 ${hm(st.feedInfo.pred)}쯤</b></span></div></div>`
-    : `<div class="subcard lbl">수유 기록이 아직 없어요</div>`;
+  const nm = babyName(), cs = charState();
+  const badge = { sleep: '🌙', feed: '🍼', bath: '🛁', awake: '☀️' }[cs];
+  const ph = `<div class="ph">${photoOr('hero', ART.chars[cs])}<span class="badge">${badge}</span></div>`;
+  const tile = (cls, ico, name, k, v, pct, color, n) => `<div class="tile t${cls}"><div class="hd"><i>${ART.icons[ico]}</i>${name}</div>
+    <div class="k">${k}</div><div class="v">${v}</div>${pct == null ? '' : `<div class="bar2"><b style="width:${pct.toFixed(1)}%;background:${color}"></b></div>`}<div class="n">${n}</div></div>`;
+  const none = (cls, ico, name, msg) => `<div class="tile t${cls} empty-t"><div class="hd"><i>${ART.icons[ico]}</i>${name}</div><div class="v">${msg}</div></div>`;
+  const fi = st.feedInfo;
+  const feedT = fi ? tile('F', 'feed', '수유', '마지막 수유 후', minShort(fi.el), fi.pct, fi.color === 'var(--nap)' ? 'var(--feed)' : fi.color, `다음 수유 ${hm(fi.pred)}쯤`)
+    : none('F', 'feed', '수유', '기록이 아직 없어요');
+  const card = (title, tag, sub, sleepT) => `<div class="hero"><div class="hrow">${ph}<div style="flex:1;min-width:0">
+      <div class="st">${title}${tag ? `<span class="tag2">${tag}</span>` : ''}</div><div class="st-sub">${sub}</div></div></div>
+    ${sleepT === null ? '' : `<div class="tiles">${sleepT}${feedT}</div>`}</div>`;
+  const who = esc(josa(nm, '은', '는'));
   if (st.mode === 'night') {
-    return `<div class="card status sleeping">${char}<div class="body">
-      <div class="lbl">밤잠 중 · ${hm(st.open.start)} 잠듦</div><div class="big">${minTxt(st.el)}째</div>
-      <div class="bar"><i style="width:${st.pct}%;background:var(--night)"></i></div>
-      <div class="row2"><span>오늘 밤 ${minTxt(st.tot)}</span><span>기상 목표 <b>${hm(st.wakeAt)}</b></span></div></div></div>`;
+    return card(`${who} 밤잠 자는 중`, '🌙 밤잠', `${hm(st.open.start)} 잠듦 · 오늘 밤 ${minTxt(st.tot)}`,
+      tile('S', 'sleep', '잠', '잠든 지', minShort(st.el), st.pct, 'var(--night)', `기상 목표 ${hm(st.wakeAt)}`));
   }
   if (st.mode === 'nap') {
-    return `<div class="card status sleeping">${char}<div class="body">
-      <div class="lbl">낮잠${st.idx} 중 · ${hm(st.open.start)} 잠듦</div><div class="big">${minTxt(st.el)}째</div>
-      ${st.target ? `<div class="bar"><i style="width:${st.pct}%;background:${st.color}"></i></div>
-      <div class="row2"><span>${st.max ? `최대 ${minTxt(st.max)}` : `목표 ${minTxt(st.target)}`}</span><span><b>${hm(st.pred)}쯤</b> 깸 예상</span></div>`
-        : '<div class="row2"><span>일정표에 없는 잠이에요 · 깰 때 낮잠/밤잠을 자동으로 판단해요</span></div>'}</div></div>`;
+    return card(`${who} 낮잠${st.idx} 자는 중`, '🌙 낮잠', `${hm(st.open.start)} 잠듦${st.target ? ` · ${st.max ? `최대 ${minTxt(st.max)}` : `목표 ${minTxt(st.target)}`}` : ''}`,
+      st.target ? tile('S', 'sleep', '잠', '잠든 지', minShort(st.el), st.pct, st.color, `${hm(st.pred)}쯤 깸 예상`)
+        : tile('S', 'sleep', '잠', '잠든 지', minShort(st.el), null, '', '일정표에 없는 잠'));
   }
   if (st.mode === 'nodata' && S.loading) {
-    return `<div class="card status">${char}<div class="body"><div class="lbl">기록을 불러오는 중…</div><div class="bar"><i class="loadbar"></i></div></div></div>`;
+    return `<div class="hero"><div class="hrow">${ph}<div style="flex:1"><div class="st">기록을 불러오는 중…</div><div class="bar2" style="background:rgba(255,255,255,.3)"><b class="loadbar"></b></div></div></div></div>`;
   }
-  if (st.mode === 'nodata') {
-    return `<div class="card status">${char}<div class="body"><div class="lbl">반가워요</div><div class="big" style="font-size:20px">잠 기록부터 시작해볼까요?</div>
-      <div class="row2"><span>잠·수유를 기록하면 다음 할 일을 계산해드려요</span></div>${feed}</div></div>`;
-  }
+  if (st.mode === 'nodata') return card('반가워요', '', '잠·수유를 기록하면 다음 할 일을 계산해드려요', none('S', 'sleep', '잠', '기록이 아직 없어요'));
   if (st.mode === 'nightwake') {
-    return `<div class="card status">${char}<div class="body"><div class="lbl">밤중에 깸 · ${hm(st.last.end)}</div><div class="big">${minTxt(st.el)}째</div>
-      <div class="row2"><span>다시 재우면 "잠 시작"을 눌러주세요</span></div>${feed}</div></div>`;
+    return card('밤중에 깼어요', '🌙 밤중', `${hm(st.last.end)} 깸 · 다시 재우면 "잠 시작"`,
+      tile('S', 'wake', '잠', '깬 지', minShort(st.el), null, '', '다시 재우면 잠 시작'));
   }
-  return `<div class="card status">${char}<div class="body">
-    <div class="lbl">깨어 있은 지 · ${st.last ? '마지막 깨시' : `${st.n}번째 깨시`}</div><div class="big">${minTxt(st.el)}</div>
-    <div class="bar"><i style="width:${st.pct}%;background:${st.color}"></i></div>
-    <div class="row2"><span>목표 ${minTxt(st.target)}</span><span><b>${st.next} ${hm(st.pred)}쯤</b></span></div>${feed}</div></div>`;
+  return card(`${who} 지금 깨어 있어요`, '☀️ 깸', `${st.last ? '마지막 깨시' : `${st.n}번째 깨시`} · 목표 ${minShort(st.target)}`,
+    tile('S', 'sleep', '잠', '깨어 있은 지', minShort(st.el), st.pct, st.color === 'var(--nap)' ? 'var(--accent)' : st.color, `${st.next} ${hm(st.pred)}쯤`));
 }
-function agoTxt(ms) {
-  const m = (Date.now() - ms) / MIN;
-  if (m < 60) return `${Math.round(m)}분 전`;
-  if (m < 24 * 60) return `${Math.floor(m / 60)}시간 전`;
-  return `${Math.floor(m / 1440)}일 전`;
+
+/* 오늘 남은 일정: 다음 잠·다음 수유는 실제 기록으로 다시 계산한 시각, 그 뒤는 일정표 시각 */
+function planItems(st) {
+  const now = Date.now(), today = dkey(now), P = st.P, out = [];
+  const plan = (key, m) => at(key, hmM(m));
+  if (st.mode === 'night' || st.mode === 'nightwake') {
+    const k = addDays(nightOf(st.mode === 'night' ? st.open : st.last), 1);
+    out.push({ t: at(k, P.raw.wake), n: '기상', i: 'wake' });
+    if (P.feeds[0]) out.push({ t: plan(k, P.feeds[0].t), n: P.feeds[0].l, i: 'feed' });
+    if (P.naps[0]) out.push({ t: plan(k, P.naps[0].s), n: '낮잠1', i: 'sleep' });
+    return out;
+  }
+  let napFrom = 0;
+  if (st.mode === 'awake') { out.push({ t: st.pred, n: st.next, i: 'sleep', due: 1 }); napFrom = st.last ? P.naps.length : st.n; }
+  else if (st.mode === 'nap') { if (st.pred) out.push({ t: st.pred, n: '깸', i: 'wake', due: 1 }); napFrom = st.idx; }
+  const fedToday = dayRecs(today).filter((r) => r.type === 'feed' && !(isNightTime(r.start) && minOfDay(r.start) < 12 * 60)).length;
+  let feedFrom = fedToday;
+  if (st.feedInfo && st.feedInfo.pred > now - 3 * HOUR) { out.push({ t: st.feedInfo.pred, n: (P.feeds[fedToday] || {}).l || '수유', i: 'feed', due: 1 }); feedFrom = fedToday + 1; }
+  const after = Math.max(now, ...out.map((o) => o.t));
+  P.naps.forEach((n, i) => { const t = plan(today, n.s); if (i >= napFrom && t > now) out.push({ t, n: `낮잠${i + 1}`, i: 'sleep' }); });
+  P.feeds.forEach((f, i) => { const t = plan(today, f.t); if (i >= feedFrom && t > after - 30 * MIN) out.push({ t, n: f.l, i: 'feed' }); });
+  if (P.bath != null && !dayRecs(today).some((r) => r.type === 'bath')) { const t = plan(today, P.bath); if (t > now) out.push({ t, n: '목욕', i: 'bath' }); }
+  if (st.next !== '밤잠') { const t = at(today, P.raw.bed); if (t > now) out.push({ t, n: '밤잠', i: 'sleep' }); }
+  return out.sort((a, b) => a.t - b.t);
+}
+function planStrip(st) {
+  if (st.mode === 'nodata') return '';
+  const items = planItems(st);
+  if (!items.length) return '';
+  const night = st.mode === 'night' || st.mode === 'nightwake';
+  return `<div class="card plan"><div class="h">${night ? '내일 아침 일정' : '오늘 남은 일정'}<span>${items.length > 4 ? '옆으로 넘겨보기 →' : esc(st.P.name)}</span></div>
+    <div class="strip">${items.map((o, i) => `<div class="sc ${i === 0 ? 'on' : ''}"><b>${hm(o.t)}</b><span>${ART.icons[o.i]}${esc(o.n)}</span></div>`).join('')}</div></div>`;
+}
+function lastCard(r) {
+  const x = recText(r);
+  return `<button class="card last" data-act="edit" data-id="${esc(r.id)}">${recIcon(r)}<div style="min-width:0"><div class="k">마지막 기록</div>
+    <div class="v">${esc(x.t)} · ${hm(r.start)}</div></div><span class="ed">고치기 ›</span></button>`;
+}
+/* 홈 알림: 기념일(오늘·내일), 지금 맞을 접종·검진, 오늘 하루 메모만 */
+function homeAlerts() {
+  const out = [];
+  if (birthKey()) {
+    const nm = babyName();
+    anniList().forEach((a) => {
+      const d = dDay(a.k);
+      if (d === 0) out.push(['🎉', `오늘 ${nm} ${josa(a.n, '이에요', '예요')}!`, '축하해요 · 성장 탭에서 기념일 보기', 'anni']);
+      else if (d === 1) out.push(['🎈', `내일은 ${nm} ${josa(a.n, '이에요', '예요')}`, `${shortDate(a.k)} · 성장 탭에서 기념일 보기`, 'anni']);
+    });
+    const due = dueHealth();
+    if (due.length) out.push(['💉', `${due[0]} ${due.length > 1 ? `외 ${due.length - 1}건 ` : ''}맞을 시기예요`, '이미 했다면 성장 탭 → 건강에서 체크해주세요', 'health']);
+  }
+  const m = S.memos[dkey(Date.now())];
+  if (m && m.text) out.push(['📝', m.text, '오늘 메모 · 하루 탭에서 보기', 'memo']);
+  return out.map(([e, b, s, k]) => `<button class="alert" data-act="alertGo" data-k="${k}"><span class="e">${e}</span><span style="min-width:0"><b>${esc(b)}</b><small>${esc(s)}</small></span></button>`).join('');
 }
 
 /* 하루 탭 */
@@ -542,25 +676,27 @@ function viewDay() {
   const sm = daySummary(key), ns = nightStats(key);
   const recs = dayRecs(key).filter((r) => !GROWTH_ONLY.has(r.type)).reverse();
   const memo = S.memos[key];
+  const tileS = (ic, t, k, v) => `<div><div class="ic ${t}">${ART.icons[ic]}</div><div class="k">${k}</div><div class="v">${v}</div></div>`;
+  const shown = S.dayAll ? recs : recs.slice(0, 5);
   return `<div class="daynav"><button data-act="day" data-d="-1" aria-label="이전 날">‹</button>
     <div class="d">${dayLabel(key)}<small>${a ? `${a.n}일째` : ''}${key === today ? ' · 오늘' : ''}</small></div>
     <button data-act="day" data-d="1" aria-label="다음 날" ${key >= today ? 'style="visibility:hidden"' : ''}>›</button></div>
   <div class="card"><div class="clock">${clockSvg(key, sm)}</div>
     <div class="legend"><span><i style="background:var(--night)"></i>밤잠</span><span><i style="background:var(--nap)"></i>낮잠</span>
     <span><i style="background:var(--feed);height:3px"></i>수유</span><span><i style="background:var(--bath);height:3px"></i>목욕</span></div></div>
-  <div class="card sum">
-    <div><div class="lbl">수유</div><div class="v c-feed">${sm.feedN}회 · ${sm.feedMl}</div></div>
-    <div><div class="lbl">낮잠</div><div class="v c-nap">${sm.napN}회 · ${minShort(sm.napMin)}</div></div>
-    <div><div class="lbl">밤잠${ns.count > 1 ? ` (최장 ${minShort(ns.longest)})` : ''}</div><div class="v c-night">${ns.tot ? minShort(ns.tot) : '-'}</div></div>
-    <div><div class="lbl">기저귀</div><div class="v c-diaper">소${sm.pee} · 대${sm.poo}</div></div></div>
-  <div class="card"><div class="h">계획 대비<span class="lbl">${esc(planFor(key).name)}</span></div>${compareTable(key)}</div>
-  <div class="card list"><div class="h">기록 전체 <span class="lbl">${recs.length}건</span><button class="chip" style="margin-left:auto" data-act="addPast">＋ 기록 추가</button></div>${recs.length ? recs.map(recItem).join('') : '<div class="empty">기록이 없어요</div>'}</div>
-  <div class="card"><div class="h">한 줄 메모${memo && memo.by ? `<span class="lbl">${esc(memo.by)}</span>` : ''}</div>
-    <input id="daymemo" maxlength="120" placeholder="오늘 있었던 일을 한 줄로" value="${esc(memo ? memo.text : '')}" data-key="${key}"></div>`;
+  <div class="sum4">${tileS('feed', 't-feed', '수유', `${sm.feedN}회·${sm.feedMl}`)}${tileS('sleep', 't-sleep', '낮잠', `${sm.napN}회·${minShort(sm.napMin)}`)}
+    ${tileS('sleep', 't-sleep', `밤잠${ns.count > 1 ? ` (최장 ${minShort(ns.longest)})` : ''}`, ns.tot ? minShort(ns.tot) : '-')}${tileS('diaper', 't-diaper', '기저귀', `소${sm.pee}·대${sm.poo}`)}</div>
+  <div class="card"><div class="h">계획 대비<span>${esc(planFor(key).name)} 일정</span></div>${compareList(key)}</div>
+  <div class="card list"><div class="h">기록 전체 · ${recs.length}건<button class="chip add xs" data-act="addPast">＋ 기록 추가</button></div>
+    ${recs.length ? shown.map(recItem).join('') : '<div class="empty">기록이 없어요</div>'}
+    ${recs.length > 5 ? `<button class="more" data-act="dayMore" data-k="dayAll">${S.dayAll ? '접기 ▴' : `${recs.length - 5}건 더 보기 ▾`}</button>` : ''}</div>
+  <div class="card"><div class="h">한 줄 메모</div>
+    <input id="daymemo" class="memo-in" maxlength="120" placeholder="오늘 있었던 일을 한 줄로 남겨보세요" value="${esc(memo ? memo.text : '')}" data-key="${key}"></div>`;
 }
 
-function clockSvg(key, sm) {
-  const C = 120, R = 86, W = 26, a0 = dstart(key), a1 = dstart(addDays(key, 1)), now = Date.now();
+/* 24시간 원형 시계. mini = 홈 화면용(글자 작게, 크기는 카드에 맞춤) */
+function clockSvg(key, sm, mini) {
+  const C = 120, R = mini ? 80 : 84, W = mini ? 26 : 28, a0 = dstart(key), a1 = dstart(addDays(key, 1)), now = Date.now();
   const pt = (frac, r) => { const ang = frac * 2 * Math.PI - Math.PI / 2; return [C + r * Math.cos(ang), C + r * Math.sin(ang)]; };
   const fr = (ms) => (ms - a0) / (a1 - a0);
   const arc = (f1, f2, color) => {
@@ -568,8 +704,8 @@ function clockSvg(key, sm) {
     const [x1, y1] = pt(f1, R), [x2, y2] = pt(f2, R);
     return `<path d="M${x1.toFixed(1)} ${y1.toFixed(1)} A${R} ${R} 0 ${f2 - f1 > 0.5 ? 1 : 0} 1 ${x2.toFixed(1)} ${y2.toFixed(1)}" fill="none" stroke="${color}" stroke-width="${W}"/>`;
   };
-  const tick = (ms, color) => { const f = fr(ms), [x1, y1] = pt(f, R - W / 2), [x2, y2] = pt(f, R + W / 2); return `<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="${color}" stroke-width="3" stroke-linecap="round"/>`; };
-  let g = `<circle cx="${C}" cy="${C}" r="${R}" fill="none" stroke="#2A2846" stroke-width="${W}"/>`;
+  const tick = (ms, color) => { const f = fr(ms), [x1, y1] = pt(f, R - W / 2), [x2, y2] = pt(f, R + W / 2); return `<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="${color}" stroke-width="3.5"/>`; };
+  let g = `<circle cx="${C}" cy="${C}" r="${R}" fill="none" stroke="var(--track)" stroke-width="${W}"/>`;
   [...dayRecs(addDays(key, -1)), ...dayRecs(key)].filter((r) => r.type === 'sleep').forEach((r) => {
     const s = Math.max(r.start, a0), e = Math.min(sleepEnd(r, Math.min(now, a1)), a1);
     if (e > s) g += arc(fr(s), fr(e), r.kind === '밤' ? 'var(--night)' : 'var(--nap)');
@@ -579,30 +715,32 @@ function clockSvg(key, sm) {
     if (r.type === 'feed') g += tick(r.start, 'var(--feed)');
     if (r.type === 'bath') g += tick(r.start, 'var(--bath)');
   });
-  for (let h = 0; h < 24; h += 3) {
+  const step = mini ? 6 : 3;
+  for (let h = 0; h < 24; h += step) {
     const [x, y] = pt(h / 24, R + W / 2 + 10);
-    g += `<text x="${x.toFixed(1)}" y="${(y + 3.5).toFixed(1)}" text-anchor="middle" font-size="10" fill="#9E99C4">${h}</text>`;
+    g += `<text x="${x.toFixed(1)}" y="${(y + 4).toFixed(1)}" text-anchor="middle" font-size="${mini ? 12 : 11}" fill="var(--muted)">${h}</text>`;
   }
-  if (now >= a0 && now < a1) { const [x, y] = pt(fr(now), R - W / 2 - 8); g += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="4" fill="#ECEAF6"/>`; }
+  if (now >= a0 && now < a1) { const [x, y] = pt(fr(now), R - W / 2 - 9); g += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="5" fill="var(--ink)"/>`; }
   const a = babyAge(key);
-  g += `<text x="${C}" y="${C - 4}" text-anchor="middle" font-size="15" font-weight="600" fill="#ECEAF6">${a ? `${a.n}일째` : ''}</text>
-    <text x="${C}" y="${C + 16}" text-anchor="middle" font-size="13" fill="#FAC775">${sm.feedMl}ml</text>`;
-  return `<svg viewBox="0 0 240 240" role="img" aria-label="${dayLabel(key)} 24시간 기록">${g}</svg>`;
+  g += `<text x="${C}" y="${C - 3}" text-anchor="middle" font-size="${mini ? 19 : 20}" font-weight="800" fill="var(--text)">${a ? `${a.n}일째` : ''}</text>
+    <text x="${C}" y="${C + 20}" text-anchor="middle" font-size="${mini ? 17 : 17}" font-weight="700" fill="var(--feed-t)">${sm.feedMl}ml</text>`;
+  return `<svg viewBox="0 0 240 240" width="100%" height="100%" role="img" aria-label="${dayLabel(key)} 24시간 기록">${g}</svg>`;
 }
 
-function diffTxt(d, kind) {
+function diffPill(d, kind) {
   const ad = Math.abs(Math.round(d));
-  if (ad <= 10) return `<span class="c-ok">${ad === 0 ? '정확' : '비슷'}</span>`;
+  if (ad <= 10) return `<span class="pill ok">${ad === 0 ? '정확' : '비슷'}</span>`;
   const w = kind === 'len' ? (d > 0 ? '길게' : '짧게') : (d > 0 ? '늦게' : '일찍');
-  return `<span class="c-over">${minTxt(ad)} ${w}</span>`;
+  return `<span class="pill over">${minTxt(ad)} ${w}</span>`;
 }
-function compareTable(key) {
-  const P = planFor(key), now = Date.now();
-  const rows = [];
-  const row = (k, p, a) => rows.push(`<div class="k">${k}</div><div class="p">${p}</div><div class="a">${a}</div>`);
+/* 계획 대비: 시간순 목록. 계획과 실제는 가까운 시각끼리 짝지음(한 번 빠져도 뒤가 밀리지 않게) */
+function compareRows(key) {
+  const P = planFor(key), now = Date.now(), today = dkey(now), rows = [];
+  const nowM = key === today ? minOfDay(now) : 1e9;
+  const row = (o) => rows.push(o);
+  const yet = (m) => (key === today && m > nowM ? '<span class="pill muted">아직</span>' : '<span class="pill muted">-</span>');
   const mw = morningWake(key);
-  row('기상', hmM(P.wake), mw ? `${hm(mw)} · ${diffTxt(minOfDay(mw) - P.wake + (dkey(mw) !== key ? -1440 : 0))}` : '<span class="lbl">기록 없음</span>');
-  // 계획과 실제를 가까운 시각끼리 짝지음(한 번 빠져도 뒤가 밀리지 않게)
+  row({ m: P.wake, ic: 'wake', t: 't-bath', n: '기상', p: `계획 ${hmM(P.wake)}`, a: mw ? hm(mw) : '', pill: mw ? diffPill(minOfDay(mw) - P.wake + (dkey(mw) !== key ? -1440 : 0)) : yet(P.wake) });
   const pairUp = (plans, acts, tOf, win) => {
     const cand = [];
     plans.forEach((p, i) => acts.forEach((r) => { const d = Math.abs(minOfDay(r.start) - tOf(p)); if (d <= win) cand.push({ i, r, d }); }));
@@ -614,41 +752,46 @@ function compareTable(key) {
   const naps = dayNaps(key);
   const np = pairUp(P.naps, naps, (p) => p.s, 120);
   P.naps.forEach((pn, i) => {
-    const r = np.by[i];
-    const plan = `${hmM(pn.s)} · ${minTxt(pn.e - pn.s)}`;
-    if (!r) { row(`낮잠${i + 1}`, plan, '<span class="lbl">-</span>'); return; }
+    const r = np.by[i], plan = `계획 ${hmM(pn.s)} · ${minTxt(pn.e - pn.s)}`;
+    if (!r) { row({ m: pn.s, ic: 'sleep', t: 't-sleep', n: `낮잠${i + 1}`, p: plan, a: '', pill: yet(pn.s) }); return; }
     const len = (sleepEnd(r, now) - r.start) / MIN;
-    row(`낮잠${i + 1}`, plan, `${hm(r.start)} · ${minTxt(len)}${r.end ? '' : '째'}<br>${diffTxt(minOfDay(r.start) - pn.s)}${r.end ? ' · ' + diffTxt(len - (pn.e - pn.s), 'len') : ''}`);
+    const lenPill = r.end && Math.abs(len - (pn.e - pn.s)) > 10 ? ` ${diffPill(len - (pn.e - pn.s), 'len')}` : '';
+    row({ m: pn.s, ic: 'sleep', t: 't-sleep', n: `낮잠${i + 1}`, p: plan, a: `${hm(r.start)} · ${r.end ? minTxt(len) : '진행 중'}`, pill: diffPill(minOfDay(r.start) - pn.s) + lenPill });
   });
-  naps.filter((r) => !np.used.has(r.id)).forEach((r) => row('추가 낮잠', '<span class="lbl">-</span>', `${hm(r.start)} · ${minTxt((sleepEnd(r, now) - r.start) / MIN)}`));
-  // 수유: 계획 시각과 가장 가까운 실제 수유를 짝지음(±2시간 안). 순서로 맞추면 한 번 빠질 때 전부 밀리기 때문
-  const feeds = dayRecs(key).filter((r) => r.type === 'feed' && !(isNightTime(r.start) && minOfDay(r.start) < 12 * 60));
+  naps.filter((r) => !np.used.has(r.id)).forEach((r) => row({ m: minOfDay(r.start), ic: 'sleep', t: 't-sleep', n: '추가 낮잠', p: '계획 없음', a: `${hm(r.start)} · ${minTxt((sleepEnd(r, now) - r.start) / MIN)}`, pill: '' }));
+  const isDawn = (r) => isNightTime(r.start) && minOfDay(r.start) < 12 * 60;
+  const feeds = dayRecs(key).filter((r) => r.type === 'feed' && !isDawn(r));
   const fp = pairUp(P.feeds, feeds, (p) => p.t, 120);
   const ml = (r) => `${esc(r.value)}ml`;
   P.feeds.forEach((pf, i) => {
     const r = fp.by[i];
-    row(esc(pf.l), hmM(pf.t), r ? `${hm(r.start)} · ${ml(r)}<br>${diffTxt(minOfDay(r.start) - pf.t)}` : '<span class="lbl">-</span>');
+    row({ m: pf.t, ic: 'feed', t: 't-feed', n: esc(pf.l), p: `계획 ${hmM(pf.t)}`, a: r ? `${hm(r.start)} · ${ml(r)}` : '', pill: r ? diffPill(minOfDay(r.start) - pf.t) : yet(pf.t) });
   });
-  feeds.filter((r) => !fp.used.has(r.id)).forEach((r) => row('추가 수유', '<span class="lbl">-</span>', `${hm(r.start)} · ${ml(r)}`));
-  const nightFeeds = dayRecs(key).filter((r) => r.type === 'feed' && isNightTime(r.start) && minOfDay(r.start) < 12 * 60);
-  if (nightFeeds.length) row('새벽 수유', '<span class="lbl">-</span>', nightFeeds.map((r) => `${hm(r.start)} · ${ml(r)}`).join('<br>'));
+  feeds.filter((r) => !fp.used.has(r.id)).forEach((r) => row({ m: minOfDay(r.start), ic: 'feed', t: 't-feed', n: '추가 수유', p: '계획 없음', a: `${hm(r.start)} · ${ml(r)}`, pill: '' }));
+  dayRecs(key).filter((r) => r.type === 'feed' && isDawn(r)).forEach((r) => row({ m: minOfDay(r.start) - 1440, ic: 'feed', t: 't-feed', n: '새벽 수유', p: '밤중', a: `${hm(r.start)} · ${ml(r)}`, pill: '' }));
   if (P.bath != null) {
-    const b = live().find((r) => r.type === 'bath' && dk(r) === key);
-    row('목욕', hmM(P.bath), b ? `${hm(b.start)} · ${diffTxt(minOfDay(b.start) - P.bath)}` : '<span class="lbl">-</span>');
+    const b = dayRecs(key).find((r) => r.type === 'bath');
+    row({ m: P.bath, ic: 'bath', t: 't-bath', n: '목욕', p: `계획 ${hmM(P.bath)}`, a: b ? hm(b.start) : '', pill: b ? diffPill(minOfDay(b.start) - P.bath) : yet(P.bath) });
   }
-  const ns = nightStats(key);
-  const first = nightRecs(key)[0];
-  row('밤잠 시작', hmM(P.bed), first ? `${hm(first.start)} · ${diffTxt(minOfDay(first.start) - P.bed + (minOfDay(first.start) < 720 ? 1440 : 0))}` : '<span class="lbl">-</span>');
-  if (ns.count) row('밤잠', '', `총 ${minTxt(ns.tot)} · 최장 ${minTxt(ns.longest)}`);
-  return `<div class="cmp"><div class="hd">항목</div><div class="hd">계획</div><div class="hd a">실제</div>${rows.join('')}</div>`;
+  const ns = nightStats(key), first = nightRecs(key)[0];
+  row({ m: P.bed, ic: 'sleep', t: 't-sleep', n: '밤잠 시작', p: `계획 ${hmM(P.bed)}`, a: first ? hm(first.start) : '',
+    pill: first ? diffPill(minOfDay(first.start) - P.bed + (minOfDay(first.start) < 720 ? 1440 : 0)) : yet(P.bed) });
+  if (ns.count) row({ m: 9999, ic: 'sleep', t: 't-sleep', n: '밤잠', p: `최장 ${minTxt(ns.longest)}`, a: `총 ${minTxt(ns.tot)}`, pill: '' });
+  return rows.sort((x, y) => x.m - y.m);
+}
+function compareList(key) {
+  const rows = compareRows(key), shown = S.planAll ? rows : rows.slice(0, 6);
+  return `<div class="cmp-list">${shown.map((o) => `<div class="prow"><span class="ic ${o.t}">${ART.icons[o.ic]}</span>
+      <div class="n">${o.n}<small>${o.p}</small></div><div class="a">${o.a}${o.a && o.pill ? '<br>' : ''}${o.pill}</div></div>`).join('')}</div>
+    ${rows.length > 6 ? `<button class="more" data-act="dayMore" data-k="planAll">${S.planAll ? '접기 ▴' : `나머지 ${rows.length - 6}개 항목 더 보기 ▾`}</button>` : ''}`;
 }
 const hmM = (m) => `${pad(Math.floor(m / 60) % 24)}:${pad(m % 60)}`;
 
 /* 패턴·성장 (2차) */
 /* ---------- 패턴 탭 ---------- */
 const PAT_ITEMS = [['night', '밤잠', 1], ['nap', '낮잠', 1], ['feed', '수유', 1], ['bath', '목욕', 1], ['poo', '대변', 1], ['pee', '소변', 0], ['temp', '체온', 0], ['med', '약', 0], ['walk', '산책', 0]];
-const PAT_COLOR = { night: '#534AB7', nap: '#AFA9EC', feed: '#FAC775', bath: '#5DCAA5', poo: '#BA7517', pee: '#F5C4B3', temp: '#E24B4A', med: '#ED93B1', walk: '#9FE1CB' };
-S.pat = { mode: 'recent', offset: 0, trend: 'feed', period: 14 };
+const PAT_COLOR = { night: '#534AB7', nap: '#AFA9EC', feed: '#F2B544', bath: '#5DCAA5', poo: '#B07A3A', pee: '#F5C4B3', temp: '#E24B4A', med: '#ED93B1', walk: '#9FE1CB' };
+S.pat = { mode: 'recent', offset: 0, trend: 'feed', period: 14, sub: 'week' };
 function patToggles() {
   const t = LS.get('patToggles', {}) || {};
   const o = {}; PAT_ITEMS.forEach(([k, , d]) => { o[k] = k in t ? !!t[k] : !!d; });
@@ -669,74 +812,83 @@ const md = (key) => { const [, m, d] = key.split('-').map(Number); return `${m}/
 const wd = (key) => { const [y, m, d] = key.split('-').map(Number); return WEEK[new Date(y, m - 1, d).getDay()]; };
 const avg = (a) => { const v = a.filter((x) => x != null && !isNaN(x)); return v.length ? v.reduce((s, x) => s + x, 0) / v.length : null; };
 const hasData = (key) => dayRecs(key).some((r) => r.type === 'feed' || r.type === 'sleep');
+/* 귀여운 똥 그림 (주간 그래프 대변 표시·항목 버튼) */
+const pooSvg = (cx, cy, k) => `<g transform="translate(${cx.toFixed(1)},${cy.toFixed(1)}) scale(${k})"><path d="M0,-9 C2,-8 3,-6.5 2.2,-5.2 C5,-5.2 6,-3 4.8,-1.6 C8,-1.4 8.6,2.6 6.2,3.6 L-6.2,3.6 C-8.6,2.6 -8,-1.4 -4.8,-1.6 C-6,-3 -5,-5.2 -2.2,-5.2 C-3.2,-6.6 -1.6,-8.4 0,-9Z" fill="#B07A3A" stroke="#fff" stroke-width="1.2"/><circle cx="-2" cy="0.9" r=".9" fill="#3A2A1A"/><circle cx="2" cy="0.9" r=".9" fill="#3A2A1A"/><path d="M-1,2.2 Q0,3 1,2.2" stroke="#3A2A1A" stroke-width=".6" fill="none"/></g>`;
+const subMenu = (items, cur, act) => `<div class="sub">${items.map(([k, n]) => `<button class="${cur === k ? 'on' : ''}" data-act="${act}" data-k="${k}">${n}</button>`).join('')}</div>`;
 
 function viewPattern() {
-  const keys = patKeys(), today = dkey(Date.now());
-  const label = `${md(keys[0])} – ${md(keys[6])}`;
-  const tg = patToggles();
-  return `${header()}
-  <div class="card"><div class="h">주간 패턴<span class="chips" style="gap:5px">
-      <button class="chip ${S.pat.mode === 'recent' ? 'on' : ''}" data-act="patMode" data-m="recent" style="padding:5px 10px;font-size:12px">최근 7일</button>
-      <button class="chip ${S.pat.mode === 'week' ? 'on' : ''}" data-act="patMode" data-m="week" style="padding:5px 10px;font-size:12px">주별</button></span></div>
-    <div class="daynav" style="margin-bottom:4px"><button data-act="patNav" data-d="-1" aria-label="이전">‹</button><div class="d">${label}</div>
+  const today = dkey(Date.now()), sub = S.pat.sub;
+  const head = `<div class="ttl"><span class="t">패턴</span><div class="r seg sm">
+      <button class="seg-b ${S.pat.mode === 'recent' ? 'on' : ''}" data-act="patMode" data-m="recent">최근 7일</button>
+      <button class="seg-b ${S.pat.mode === 'week' ? 'on' : ''}" data-act="patMode" data-m="week">주별</button></div></div>
+    ${subMenu([['week', '주간 그래프'], ['cmp', '7일 비교'], ['trend', '추이'], ['goal', '목표']], sub, 'patSub')}`;
+  if (sub === 'cmp') return head + weekTableCard(patKeys(), today);
+  if (sub === 'trend') return head + trendCard(today);
+  if (sub === 'goal') return head + goalCard(today);
+  const keys = patKeys(), tg = patToggles();
+  return `${head}<div class="card"><div class="wnav"><button data-act="patNav" data-d="-1" aria-label="이전">‹</button><div>${md(keys[0])} – ${md(keys[6])}</div>
       <button data-act="patNav" data-d="1" aria-label="다음" ${S.pat.offset >= 0 ? 'style="visibility:hidden"' : ''}>›</button></div>
-    <div class="chips" style="gap:5px;margin-bottom:8px">${PAT_ITEMS.map(([k, n]) => `<button class="chip ${tg[k] ? 'on' : ''}" data-act="patToggle" data-k="${k}" style="padding:5px 9px;font-size:12px"><span class="dot" style="background:${PAT_COLOR[k]}"></span>${n}</button>`).join('')}</div>
+    <div class="chips" style="gap:5px;margin-bottom:8px">${PAT_ITEMS.map(([k, n]) => `<button class="chip xs ${tg[k] ? 'on' : ''}" data-act="patToggle" data-k="${k}">${k === 'poo' ? `<svg class="poo" viewBox="-9 -10 18 15">${pooSvg(0, 0, 1)}</svg>` : `<span class="dot" style="background:${PAT_COLOR[k]}"></span>`}${n}</button>`).join('')}</div>
     ${weekSvg(keys, tg)}
-    <div class="lbl" style="text-align:center;margin-top:4px">날짜를 누르면 그날 기록으로 이동해요</div></div>
-  <div class="card">${weekTable(keys, today)}</div>
-  <div class="card">${trendCard(today)}</div>
-  <div class="card">${goalCard(today)}</div>`;
+    <div class="sum">날짜를 누르면 그날 기록으로 이동해요</div></div>`;
 }
 
 function weekSvg(keys, tg) {
-  const L = 24, T = 6, H = 380, W = 340, gap = 4, cw = (W - L - 2 - gap * 6) / 7, now = Date.now();
+  const L = 22, T = 6, H = 400, W = 340, gap = 5, cw = (W - L - 2 - gap * 6) / 7, now = Date.now();
   let g = '';
   const today = dkey(now);
-  for (let h = 0; h <= 24; h += 3) g += `<text x="${L - 4}" y="${(T + h / 24 * H + 3).toFixed(1)}" text-anchor="end" font-size="9" fill="#9E99C4">${h}</text>`;
   keys.forEach((key, i) => {
     const x = L + i * (cw + gap), a0 = dstart(key), a1 = dstart(addDays(key, 1));
     const y = (ms) => T + (ms - a0) / (a1 - a0) * H;
-    let col = `<rect x="${x.toFixed(1)}" y="${T}" width="${cw.toFixed(1)}" height="${H}" rx="3" fill="#22203A"/>`;
-    if (now < a1) col += `<rect x="${x.toFixed(1)}" y="${Math.max(T, y(now)).toFixed(1)}" width="${cw.toFixed(1)}" height="${(T + H - Math.max(T, y(now))).toFixed(1)}" fill="#17162A"/>`;
+    let col = `<rect x="${x.toFixed(1)}" y="${T}" width="${cw.toFixed(1)}" height="${H}" rx="5" fill="var(--soft)"/>`;
+    if (now < a1) col += `<rect x="${x.toFixed(1)}" y="${Math.max(T, y(now)).toFixed(1)}" width="${cw.toFixed(1)}" height="${(T + H - Math.max(T, y(now))).toFixed(1)}" fill="var(--soft2)"/>`;
     [...dayRecs(addDays(key, -1)), ...dayRecs(key)].filter((r) => r.type === 'sleep').forEach((r) => {
       const k = r.kind === '밤' ? 'night' : 'nap';
       if (!tg[k]) return;
       const s = Math.max(r.start, a0), e = Math.min(sleepEnd(r, Math.min(now, a1)), a1);
       if (e > s) col += `<rect x="${x.toFixed(1)}" y="${y(s).toFixed(1)}" width="${cw.toFixed(1)}" height="${Math.max(1, y(e) - y(s)).toFixed(1)}" fill="${PAT_COLOR[k]}"/>`;
     });
+    let marks = '';
     dayRecs(key).forEach((r) => {
       if (r.start < a0 || r.start >= a1) return;
       const yy = y(r.start);
-      const bar = (c) => `<rect x="${x.toFixed(1)}" y="${(yy - 1.2).toFixed(1)}" width="${cw.toFixed(1)}" height="2.6" fill="${c}"/>`;
+      const bar = (c) => `<rect x="${x.toFixed(1)}" y="${(yy - 1.3).toFixed(1)}" width="${cw.toFixed(1)}" height="2.8" fill="${c}"/>`;
       const dot = (c, dx, rad) => `<circle cx="${(x + cw * dx).toFixed(1)}" cy="${yy.toFixed(1)}" r="${rad}" fill="${c}"/>`;
       if (r.type === 'feed' && tg.feed) col += bar(PAT_COLOR.feed);
       else if (r.type === 'bath' && tg.bath) col += bar(PAT_COLOR.bath);
       else if (r.type === 'diaper') {
-        if (isPoop(r) && tg.poo) col += dot(PAT_COLOR.poo, 0.5, 4);
+        if (isPoop(r) && tg.poo) marks += pooSvg(x + cw / 2, yy + 0.5, 0.6);
         if ((r.d1 === '소변' || r.d1 === '둘다') && tg.pee) col += dot(PAT_COLOR.pee, 0.22, 2.4);
       } else if (r.type === 'temp' && tg.temp) col += dot(PAT_COLOR.temp, 0.78, 3);
       else if (r.type === 'med' && tg.med) col += dot(PAT_COLOR.med, 0.78, 3);
       else if (r.type === 'walk' && tg.walk) col += dot(PAT_COLOR.walk, 0.22, 3);
     });
-    const isToday = key === dkey(now);
-    col += `<text x="${(x + cw / 2).toFixed(1)}" y="${T + H + 13}" text-anchor="middle" font-size="10" fill="${isToday ? '#ECEAF6' : '#9E99C4'}" font-weight="${isToday ? 600 : 400}">${md(key)}</text>
-      <text x="${(x + cw / 2).toFixed(1)}" y="${T + H + 25}" text-anchor="middle" font-size="9" fill="${wd(key) === '일' ? '#F09595' : '#9E99C4'}">${wd(key)}</text>
-      <rect x="${x.toFixed(1)}" y="0" width="${cw.toFixed(1)}" height="${T + H + 28}" fill="transparent"/>`;
+    col += marks;
+    const isToday = key === today;
+    col += `<text x="${(x + cw / 2).toFixed(1)}" y="${T + H + 14}" text-anchor="middle" font-size="10.5" fill="${isToday ? 'var(--text)' : 'var(--muted)'}" font-weight="${isToday ? 800 : 600}">${md(key).split('/')[1]}</text>
+      <text x="${(x + cw / 2).toFixed(1)}" y="${T + H + 26}" text-anchor="middle" font-size="9.5" fill="${wd(key) === '일' ? '#E0736B' : 'var(--faint)'}">${wd(key)}</text>
+      <rect x="${x.toFixed(1)}" y="0" width="${cw.toFixed(1)}" height="${T + H + 30}" fill="transparent"/>`;
     g += key > today ? `<g opacity="0.35">${col}</g>` : `<g data-act="patDay" data-d="${key}" style="cursor:pointer">${col}</g>`;
   });
+  // 3시간마다 눈금 + 점선(막대 위에 옅게)
+  for (let h = 0; h <= 24; h += 3) {
+    const yy = (T + h / 24 * H).toFixed(1);
+    g += `<line x1="${L}" x2="${W - 2}" y1="${yy}" y2="${yy}" stroke="var(--card)" stroke-opacity=".55" stroke-width=".7" stroke-dasharray="2 2" pointer-events="none"/>
+      <text x="${L - 4}" y="${(Number(yy) + 3).toFixed(1)}" text-anchor="end" font-size="9" fill="var(--muted)">${h}</text>`;
+  }
   return `<svg viewBox="0 0 ${W} ${T + H + 30}" width="100%" role="img" aria-label="주간 패턴">${g}</svg>`;
 }
 
-function weekTable(keys, today) {
+function weekTableCard(keys, today) {
   const rows = keys.map((key) => {
     const sm = daySummary(key), ns = nightStats(key), any = hasData(key);
     return { key, any, sm, ns, done: key < today };
   });
   const cell = (ok, v) => (ok ? v : '<span class="lbl">-</span>');
   const body = rows.map((r) => `<${r.key > today ? 'div class="trow future"' : `button class="trow" data-act="patDay" data-d="${r.key}"`}>
-      <span>${md(r.key)} <span class="lbl">(${wd(r.key)})</span>${r.key === today ? ' <span class="lbl">진행 중</span>' : ''}</span>
-      <span class="c-feed">${cell(r.sm.feedN, `${r.sm.feedN}회 · ${r.sm.feedMl}`)}</span>
-      <span class="c-nap">${cell(r.sm.napN, `${r.sm.napN}회 · ${minShort(r.sm.napMin)}`)}</span>
+      <span>${md(r.key)} (${wd(r.key)})${r.key === today ? ' <span class="lbl">진행 중</span>' : ''}</span>
+      <span class="c-feed">${cell(r.sm.feedN, `${r.sm.feedN}·${r.sm.feedMl}`)}</span>
+      <span class="c-nap">${cell(r.sm.napN, `${r.sm.napN}·${minShort(r.sm.napMin)}`)}</span>
       <span class="c-night">${cell(r.ns.tot, `${minShort(r.ns.tot)} <span class="lbl">(${minShort(r.ns.longest)})</span>${r.ns.open ? ' <span class="lbl">진행 중</span>' : ''}`)}</span></${r.key > today ? 'div' : 'button'}>`).join('');
   // 평균: 기록이 있는 지난 날만(오늘은 진행 중이라 제외)
   const done = rows.filter((r) => r.done && r.any);
@@ -744,10 +896,16 @@ function weekTable(keys, today) {
   const fN = a((r) => r.sm.feedN || null), fM = a((r) => r.sm.feedMl || null), nN = a((r) => (r.sm.napN ? r.sm.napN : null)), nM = a((r) => (r.sm.napN ? r.sm.napMin : null));
   const tN = a((r) => (r.ns.tot && !r.ns.open ? r.ns.tot : null)), lN = a((r) => (r.ns.tot && !r.ns.open ? r.ns.longest : null));
   const f1 = (v) => (v == null ? '-' : (Math.round(v * 10) / 10).toString());
-  return `<div class="h">7일 비교<span class="lbl">밤잠은 (최장 연속)</span></div>
-    <div class="ttable"><div class="thead"><span>날짜</span><span>수유</span><span>낮잠</span><span>밤잠</span></div>${body}
-    <div class="tavg"><span>평균 <span class="lbl">${done.length}일</span></span><span class="c-feed">${fM == null ? '-' : `${f1(fN)}회 · ${Math.round(fM)}`}</span>
-      <span class="c-nap">${nM == null ? '-' : `${f1(nN)}회 · ${minShort(nM)}`}</span><span class="c-night">${tN == null ? '-' : `${minShort(tN)} <span class="lbl">(${minShort(lN)})</span>`}</span></div></div>`;
+  // 작은 카드: 오늘 지금까지 수유 / 어제보다 밤잠
+  const tk = dkey(Date.now()), y1 = addDays(tk, -1), y2 = addDays(tk, -2);
+  const ts = daySummary(tk), n1 = nightStats(y1), n2 = nightStats(y2);
+  const nd = n1.tot && n2.tot && !n1.open && !n2.open ? n1.tot - n2.tot : null;
+  return `<div class="card"><div class="h">7일 비교<span>오늘은 평균에서 빼요</span></div>
+    <div class="ttable"><div class="thead"><span>날짜</span><span>수유 <small>회·ml</small></span><span>낮잠</span><span>밤잠 <small>(최장)</small></span></div>${body}
+    <div class="tavg"><span>평균 <span class="lbl">${done.length}일</span></span><span class="c-feed">${fM == null ? '-' : `${f1(fN)}·${Math.round(fM)}`}</span>
+      <span class="c-nap">${nM == null ? '-' : `${f1(nN)}·${minShort(nM)}`}</span><span class="c-night">${tN == null ? '-' : `${minShort(tN)} <span class="lbl">(${minShort(lN)})</span>`}</span></div></div></div>
+  <div class="mini"><div><div class="k">오늘 수유 (지금까지)</div><b class="c-feed">${ts.feedN}회 · ${ts.feedMl}ml</b></div>
+    <div><div class="k">어제보다 밤잠</div><b class="c-night">${nd == null ? '-' : `${nd >= 0 ? '+' : '−'}${minTxt(Math.abs(nd))}`}</b></div></div>`;
 }
 
 /* 추이: 오늘은 진행 중이라 어제까지 */
@@ -766,38 +924,51 @@ function trendData(today) {
     };
   });
 }
+/* 기간 앞쪽 3일 평균과 뒤쪽 3일 평균의 차이 */
+function edgeDiff(vals) {
+  const v = vals.filter((x) => x != null);
+  if (v.length < 4) return null;
+  return avg(v.slice(-3)) - avg(v.slice(0, 3));
+}
 function trendCard(today) {
   const d = trendData(today), t = S.pat.trend;
-  const per = [[7, '1주'], [14, '2주'], [30, '1달']].map(([n, l]) => `<button class="chip ${S.pat.period === n ? 'on' : ''}" data-act="patPeriod" data-n="${n}" style="padding:5px 10px;font-size:12px">${l}</button>`).join('');
+  const perN = { 7: '1주', 14: '2주', 30: '1달' }[S.pat.period];
+  const per = [[7, '1주'], [14, '2주'], [30, '1달']].map(([n, l]) => `<button class="chip xs ${S.pat.period === n ? 'on' : ''}" data-act="patPeriod" data-n="${n}">${l}</button>`).join('');
   const seg = [['feed', '수유'], ['sleep', '통잠'], ['rhythm', '리듬']].map(([k, l]) => `<button class="seg-b ${t === k ? 'on' : ''}" data-act="patTrend" data-t="${k}">${l}</button>`).join('');
   const hhmm = (h) => hmM(((Math.round(h * 60) % 1440) + 1440) % 1440);
   const dur = (h) => minShort(h * 60);
-  let series, fmt, summary, step;
+  const sgn = (v, f) => (v == null ? '-' : `${v >= 0 ? '+' : '−'}${f(Math.abs(v))}`);
+  const maxOf = (k) => d.reduce((m, x) => (x[k] != null && (!m || x[k] > m[k]) ? x : m), null);
+  let series, fmt, summary, step, mini;
   if (t === 'feed') {
     series = [{ v: d.map((x) => x.feedMl), c: PAT_COLOR.feed, n: '하루 총량' }];
     fmt = (v) => `${Math.round(v)}`; step = 50;
-    const a = avg(d.map((x) => x.feedMl)), b = avg(d.map((x) => x.feedAvg));
+    const a = avg(d.map((x) => x.feedMl)), b = avg(d.map((x) => x.feedAvg)), m = maxOf('feedMl');
     summary = a == null ? '' : `하루 평균 <b>${Math.round(a)}ml</b> · 1회 평균 <b>${Math.round(b)}ml</b>`;
+    mini = [[`${perN} 전보다 하루 수유`, sgn(edgeDiff(d.map((x) => x.feedMl)), (v) => `${Math.round(v)}ml`), 'c-feed'], ['가장 많이 먹은 날', m ? `${md(m.key)} · ${m.feedMl}ml` : '-', 'c-feed']];
   } else if (t === 'sleep') {
     series = [{ v: d.map((x) => x.nightTot), c: PAT_COLOR.night, n: '밤잠 총량' }, { v: d.map((x) => x.longest), c: '#8F87E6', n: '최장 연속' }];
     fmt = dur; step = 1;
-    const a = avg(d.map((x) => x.nightTot)), b = avg(d.map((x) => x.longest));
+    const a = avg(d.map((x) => x.nightTot)), b = avg(d.map((x) => x.longest)), m = maxOf('longest');
     summary = a == null ? '' : `평균 밤잠 <b>${dur(a)}</b> · 평균 최장 <b>${dur(b)}</b>`;
+    mini = [[`${perN} 전보다 최장 통잠`, sgn(edgeDiff(d.map((x) => x.longest)), (v) => minTxt(v * 60)), 'c-night'], ['가장 길게 잔 밤', m ? `${md(m.key)} · ${dur(m.longest)}` : '-', 'c-night']];
   } else {
     series = [{ v: d.map((x) => x.wake), c: PAT_COLOR.walk, n: '기상' }, { v: d.map((x) => x.first), c: PAT_COLOR.feed, n: '첫 수유' }, { v: d.map((x) => x.bed), c: PAT_COLOR.nap, n: '밤잠 시작' }];
     fmt = hhmm; step = 1;
     const w = avg(d.map((x) => x.wake)), f = avg(d.map((x) => x.first)), b = avg(d.map((x) => x.bed));
     summary = w == null && b == null ? '' : `평균 기상 <b>${w == null ? '-' : hhmm(w)}</b> · 첫 수유 <b>${f == null ? '-' : hhmm(f)}</b> · 밤잠 <b>${b == null ? '-' : hhmm(b)}</b>`;
+    mini = [[`${perN} 전보다 기상`, sgn(edgeDiff(d.map((x) => x.wake)), (v) => minTxt(v * 60)), 'c-bath'], [`${perN} 전보다 밤잠 시작`, sgn(edgeDiff(d.map((x) => x.bed)), (v) => minTxt(v * 60)), 'c-nap']];
   }
-  const legend = series.map((s) => `<span><i style="background:${s.c};height:3px"></i>${s.n}</span>`).join('');
-  return `<div class="h">추이<span class="chips" style="gap:5px">${per}</span></div>
+  const legend = series.length > 1 ? `<div class="legend" style="margin-top:2px">${series.map((s) => `<span><i style="background:${s.c};height:3px"></i>${s.n}</span>`).join('')}</div>` : '';
+  return `<div class="card"><div class="h">추이<span class="chips" style="gap:4px;flex-wrap:nowrap">${per}</span></div>
     <div class="seg">${seg}</div>
-    ${lineSvg(d.map((x) => x.key), series, fmt, step)}
-    <div class="legend" style="margin-top:2px">${legend}</div>
-    <div class="lbl" style="text-align:center;margin-top:6px">${summary || '아직 기록이 부족해요'}</div>`;
+    ${lineSvg(d.map((x) => x.key), series, fmt, step)}${legend}
+    <div class="sum">${summary || '아직 기록이 부족해요'}</div></div>
+    <div class="mini">${mini.map(([k, v, c]) => `<div><div class="k">${k}</div><b class="${c}">${v}</b></div>`).join('')}</div>
+    <div class="note2" style="margin-top:-2px">${perN} 전보다 = 기간 처음 3일 평균과 마지막 3일 평균의 차이</div>`;
 }
 function lineSvg(keys, series, fmt, step) {
-  const W = 320, H = 170, L = 38, R = 8, T = 8, B = 18, iw = W - L - R, ih = H - T - B;
+  const W = 320, H = 230, L = 38, R = 8, T = 10, B = 18, iw = W - L - R, ih = H - T - B;
   const all = series.flatMap((s) => s.v).filter((v) => v != null);
   if (!all.length) return `<div class="empty">이 기간에 기록이 없어요</div>`;
   let lo = Math.min(...all), hi = Math.max(...all);
@@ -807,12 +978,19 @@ function lineSvg(keys, series, fmt, step) {
   if (step) { lo = Math.floor(lo / step) * step; hi = Math.ceil(hi / step) * step; if (hi - lo < 2 * step) hi = lo + 2 * step; }
   const x = (i) => L + (keys.length === 1 ? iw / 2 : (i / (keys.length - 1)) * iw), y = (v) => T + ih - ((v - lo) / (hi - lo)) * ih;
   let g = '';
-  [0, 0.5, 1].forEach((f) => { const v = lo + (hi - lo) * f; g += `<line x1="${L}" x2="${W - R}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}" stroke="#34314F" stroke-width="0.6"/><text x="${L - 4}" y="${(y(v) + 3).toFixed(1)}" text-anchor="end" font-size="9" fill="#9E99C4">${fmt(v)}</text>`; });
-  [0, Math.floor((keys.length - 1) / 2), keys.length - 1].forEach((i) => { g += `<text x="${x(i).toFixed(1)}" y="${H - 4}" text-anchor="middle" font-size="9" fill="#9E99C4">${md(keys[i])}</text>`; });
+  [0, 0.5, 1].forEach((f) => { const v = lo + (hi - lo) * f; g += `<line x1="${L}" x2="${W - R}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}" stroke="var(--grid)" stroke-width="1"/><text x="${L - 4}" y="${(y(v) + 3).toFixed(1)}" text-anchor="end" font-size="9" fill="var(--muted)">${fmt(v)}</text>`; });
+  const lastI = keys.length - 1;
+  [0, Math.floor(lastI / 2), lastI].forEach((i, j) => { g += `<text x="${x(i).toFixed(1)}" y="${H - 4}" text-anchor="${j === 0 ? 'start' : j === 2 ? 'end' : 'middle'}" font-size="9" fill="var(--muted)">${md(keys[i])}</text>`; });
   series.forEach((s) => {
     let seg = [];
-    const flushSeg = () => { if (seg.length > 1) g += `<polyline points="${seg.join(' ')}" fill="none" stroke="${s.c}" stroke-width="2" stroke-linejoin="round"/>`; seg = []; };
-    s.v.forEach((v, i) => { if (v == null) { flushSeg(); return; } seg.push(`${x(i).toFixed(1)},${y(v).toFixed(1)}`); g += `<circle cx="${x(i).toFixed(1)}" cy="${y(v).toFixed(1)}" r="2.2" fill="${s.c}"/>`; });
+    const flushSeg = () => {
+      if (seg.length > 1) {
+        if (series.length === 1) g += `<path d="M${seg[0][0]},${y(lo).toFixed(1)} L${seg.map((p) => p.join(',')).join(' L')} L${seg[seg.length - 1][0]},${y(lo).toFixed(1)}Z" fill="${s.c}" fill-opacity=".15"/>`;
+        g += `<polyline points="${seg.map((p) => p.join(',')).join(' ')}" fill="none" stroke="${s.c}" stroke-width="2.4" stroke-linejoin="round"/>`;
+      }
+      seg = [];
+    };
+    s.v.forEach((v, i) => { if (v == null) { flushSeg(); return; } seg.push([x(i).toFixed(1), y(v).toFixed(1)]); g += `<circle cx="${x(i).toFixed(1)}" cy="${y(v).toFixed(1)}" r="2.6" fill="${s.c}"/>`; });
     flushSeg();
   });
   return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="추이 그래프">${g}</svg>`;
@@ -837,7 +1015,8 @@ function goalCard(today) {
     if (bed) push('bed', minOfDay(bed.start) + (minOfDay(bed.start) < 12 * 60 ? 1440 : 0), P.bed);
     if (naps.length) push('nap', naps.reduce((s, r) => s + (r.end - r.start) / MIN, 0), P.naps.reduce((s, n) => s + (n.e - n.s), 0));
   });
-  if (!days) return `<div class="h">목표 vs 실제<span class="lbl">최근 7일</span></div><div class="empty">지난 7일 기록이 쌓이면 보여드려요</div>`;
+  const link = `<button class="card linkrow" data-act="goPlan"><div>목표 수정<small>깨시·수유 간격·밤잠 시작 시간은 일정표에서 바꿔요</small></div><span class="go">일정표 ›</span></button>`;
+  if (!days) return `<div class="card"><div class="h">목표 vs 실제<span>최근 7일</span></div><div class="empty">지난 7일 기록이 쌓이면 보여드려요</div></div>${link}`;
   const order = Object.keys(acc).filter((k) => /^ww\d/.test(k)).sort((a, b) => Number(a.slice(2)) - Number(b.slice(2)));
   const names = { feed: '수유 간격', bed: '밤잠 시작', nap: '낮잠 총량', wwLast: '마지막 깨시' };
   const rows = [...order, 'wwLast', 'feed', 'bed', 'nap'].filter((k) => acc[k]).map((k) => {
@@ -845,61 +1024,209 @@ function goalCard(today) {
     const show = k === 'bed' ? hmM(Math.round(t) % 1440) : minShort(t);
     const act = k === 'bed' ? hmM(Math.round(a) % 1440) : minShort(a);
     const ad = Math.abs(Math.round(dlt));
-    const dTxt = ad <= 10 ? `<span class="c-ok">${ad ? (dlt > 0 ? '+' : '-') + ad + '분' : '같음'}</span>` : `<span class="c-over">${dlt > 0 ? '+' : '-'}${minTxt(ad)}</span>`;
-    return `<div class="k">${k.startsWith('ww') && k !== 'wwLast' ? `깨시 ${k.slice(2)}` : names[k]}</div><div class="p">${show}</div><div class="a">${act}</div><div class="a">${dTxt}</div>`;
+    const dTxt = ad <= 10 ? `<span class="pill ok">${ad ? (dlt > 0 ? '+' : '−') + ad + '분' : '같음'}</span>` : `<span class="pill over">${dlt > 0 ? '+' : '−'}${minTxt(ad)}</span>`;
+    return `<div>${k.startsWith('ww') && k !== 'wwLast' ? `깨시 ${k.slice(2)}` : names[k]}</div><div class="p">${show}</div><div class="a">${act}</div><div class="a">${dTxt}</div>`;
   }).join('');
-  return `<div class="h">목표 vs 실제<span class="lbl">최근 7일 · ${days}일 기준</span></div>
-    <div class="cmp" style="grid-template-columns:auto 1fr auto auto"><div class="hd">항목</div><div class="hd">목표</div><div class="hd a">실제</div><div class="hd a">차이</div>${rows}</div>
-    <div class="lbl" style="margin-top:6px">목표는 날마다 그날 적용된 일정표 기준이에요 · 10분 넘게 차이 나면 주황</div>`;
+  return `<div class="card"><div class="h">목표 vs 실제<span>최근 7일 · ${days}일 기준</span></div>
+    <div class="cmp" style="grid-template-columns:1fr auto auto auto"><div class="hd">항목</div><div class="hd">목표</div><div class="hd a">실제</div><div class="hd a">차이</div>${rows}</div>
+    <div class="note2">목표는 날마다 그날 적용된 일정표 기준 · 10분 넘게 차이 나면 주황</div></div>${link}`;
 }
 
 /* 설정 */
+const curApply = () => [...S.apply].sort((a, b) => (a.from < b.from ? -1 : 1)).filter((a) => a.from <= dkey(Date.now())).pop();
+const isAdmin = () => !!(S.users.find((u) => u.name === S.auth.user) || {}).admin;
 function viewSettings() {
-  const cur = [...S.apply].sort((a, b) => (a.from < b.from ? -1 : 1)).filter((a) => a.from <= dkey(Date.now())).pop();
-  const names = Object.keys(S.plans);
-  const sw = (k) => `<button class="switch ${set(k) === 'true' ? 'on' : ''}" data-act="toggle" data-k="${k}" aria-label="켜기/끄기"></button>`;
-  const inp = (k, type, extra = '') => `<input type="${type}" data-set="${k}" value="${esc(set(k))}" ${extra}>`;
-  return `<div class="top"><button class="gear" style="margin:0" data-act="tab" data-tab="home" aria-label="뒤로">‹</button><div class="name">설정</div></div>
-  <div class="card set"><div class="h">아기</div>
-    <div class="item"><span class="k">이름</span><input type="text" data-set="babyName" value="${esc(set('babyName'))}" placeholder="우리 아기" maxlength="12"></div>
-    <div class="item"><span class="k">생일</span>${inp('birthDate', 'date')}</div></div>
-  <div class="card set"><div class="h">일정표</div>
-    <div class="item"><span class="k">지금 적용 중<small>${cur ? `${esc(cur.from)}부터` : ''}</small></span><b>${esc(cur ? cur.name : '-')}</b></div>
-    <div class="item"><span class="k">일정 바꾸기<small>지난 날짜는 그날 일정 그대로 비교돼요</small></span></div>
-    <div class="field"><select id="applyName">${names.map((n) => `<option ${cur && cur.name === n ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select></div>
-    <div class="inline" style="margin-bottom:12px"><input type="date" id="applyFrom" value="${dkey(Date.now())}"><button class="chip on" style="flex:0 0 auto" data-act="applyPlan">이 날부터 적용</button></div>
-    <div class="chips">${names.map((n) => `<button class="chip" data-act="editPlan" data-name="${esc(n)}">${esc(n)} 편집</button>`).join('')}<button class="chip" data-act="newPlan">＋ 새 일정</button></div></div>
-  <div class="card set"><div class="h">분유</div>
-    <div class="item"><span class="k">자주 쓰는 양 (ml)<small>쉼표로 구분</small></span>${inp('feedPresets', 'text', 'inputmode="numeric"')}</div></div>
-  <div class="card set"><div class="h">기준값</div>
-    <div class="item"><span class="k">밤잠 시작<small>이 시각 이후 잠은 밤잠</small></span>${inp('nightStart', 'time')}</div>
-    <div class="item"><span class="k">밤잠 끝<small>이 시각 이전 잠도 밤잠</small></span>${inp('nightEnd', 'time')}</div>
-    <div class="item"><span class="k">체온 주의 (℃)</span>${inp('tempWarn', 'number', 'step="0.1"')}</div>
-    <div class="item"><span class="k">체온 고열 (℃)</span>${inp('tempHigh', 'number', 'step="0.1"')}</div></div>
-  <div class="card set"><div class="h">기능</div>
-    <div class="item"><span class="k">이유식 버튼</span>${sw('showFood')}</div>
-    <div class="item"><span class="k">밤잠 집계<small>잠든 날: 밤 전체를 잠든 날로 / 자정: 0시에서 나눔</small></span>
-      <select data-set="nightMode"><option value="start" ${set('nightMode') !== 'midnight' ? 'selected' : ''}>잠든 날 기준</option><option value="midnight" ${set('nightMode') === 'midnight' ? 'selected' : ''}>자정 기준</option></select></div></div>
-  <div class="card set"><div class="h">사용자</div><div id="users">${S.users.map((u, i) => userRow(u, i)).join('')}</div>
-    <div class="inline" style="margin-top:8px"><button class="chip" data-act="addUser">＋ 사람 추가</button><button class="chip on" data-act="saveUsers">사용자 저장</button></div>
-    <div class="lbl" style="margin-top:6px">PIN은 바꿀 때만 입력하세요. 비워두면 그대로예요.</div></div>
-  ${S.failed.length ? `<div class="card set"><div class="h c-over">저장 못 한 기록 ${S.failed.length}건</div>
-    <div class="lbl" style="margin-bottom:8px">${esc(S.failed[0].err || '')}</div>
+  const cur = curApply();
+  const row = (k, v, act, sub) => `<button class="sb" data-act="${act}"><span class="k">${k}${sub ? `<small>${sub}</small>` : ''}</span><span class="v">${v}</span><span class="ar">›</span></button>`;
+  const th = LOOK.theme().k, fo = LOOK.font().k, sz = LOOK.size().k;
+  LOOK.fonts.forEach((f) => LOOK.loadFont(f));   // 견본 글씨를 보여주려고 다섯 글씨체를 모두 부름(견본 글자 조각만 받음)
+  const ph = (slot, name, round) => `<div class="pt"><div class="im" style="border-radius:${round ? '50%' : '16px'}">${photoOr(slot, ART.chars.awake)}</div>${name}
+      <div class="bt"><button data-act="photo" data-slot="${slot}">바꾸기</button>${LOOK.photo(slot) ? `<button data-act="photoClear" data-slot="${slot}">기본 그림</button>` : ''}</div></div>`;
+  const [b] = [set('birthDate')];
+  return `<div class="ttl"><button class="back" data-act="tab" data-tab="home" aria-label="뒤로">‹</button><span class="t">설정</span></div>
+  <div class="gh" style="margin-top:2px">사진 · 갤러리에서 골라요</div>
+  <div class="grp"><div class="phs">${ph('avatar', '맨 위 프로필', true)}${ph('hero', '상태 카드', false)}</div></div>
+  <div class="gh">테마</div>
+  <div class="grp"><div class="ths">${LOOK.themes.map((t) => `<button class="tc ${t.k === th ? 'on' : ''}" data-act="look" data-k="theme" data-v="${t.k}">
+      <div class="m" style="background:${t.bg}"><i style="background:${t.a}"></i><i style="background:${t.c}"></i></div>${t.n}${t.k === th ? ' ✓' : ''}</button>`).join('')}</div></div>
+  <div class="gh">글씨체</div>
+  <div class="grp">${LOOK.fonts.map((f) => `<button class="fr ${f.k === fo ? 'on' : ''}" data-act="look" data-k="font" data-v="${f.k}"><span class="rd"></span>
+      <span class="s" style="font-family:${f.fam},'BL Pretendard',sans-serif;${f.sample}">${esc(babyName())} 100일 축하해 · 150ml</span><span class="n">${f.n}${f.k === 'pretendard' ? ' (기본)' : ''}</span></button>`).join('')}</div>
+  <div class="gh">글씨 크기</div>
+  <div class="grp"><div class="szp"><div class="seg" style="margin:0">${LOOK.sizes.map((s) => `<button class="seg-b ${s.k === sz ? 'on' : ''}" data-act="look" data-k="size" data-v="${s.k}">${s.n}</button>`).join('')}</div>
+    <div class="prev"><span>마지막 수유 후</span><b style="font-size:21px">1:12</b></div></div></div>
+  <div class="note2">사진·테마·글씨는 이 휴대폰에만 적용돼요</div>
+  <div class="gh">아기</div>
+  <div class="grp">${row('이름', esc(set('babyName') || '우리 아기'), 'setName')}${row('생일', b ? esc(b.replace(/-/g, '. ').replace(/\. 0/g, '. ')) : '-', 'setBirth')}</div>
+  <div class="gh">기록 기준</div>
+  <div class="grp">${row('일정표', esc(cur ? cur.name : '-'), 'setPlan', cur ? `${esc(cur.from)}부터 적용` : '')}
+    ${row('분유 자주 쓰는 양', esc(String(set('feedPresets')).replace(/,/g, '·')), 'setPresets')}
+    ${row('밤잠 시간대', `${esc(set('nightStart'))} – ${esc(set('nightEnd'))}`, 'setNight', '이 시간에 잠들면 밤잠')}
+    ${row('체온 주의 · 고열', `${esc(set('tempWarn'))} · ${esc(set('tempHigh'))}℃`, 'setTemp')}
+    ${row('밤잠 집계', set('nightMode') === 'midnight' ? '자정 기준' : '잠든 날 기준', 'setNightMode')}
+    <div class="sb"><span class="k">이유식 버튼</span><button class="switch ${set('showFood') === 'true' ? 'on' : ''}" data-act="toggle" data-k="showFood" aria-label="켜기/끄기"></button></div></div>
+  ${S.failed.length ? `<div class="gh danger">저장 못 한 기록 ${S.failed.length}건</div>
+    <div class="grp" style="padding:12px 14px"><div class="lbl" style="margin-bottom:8px">${esc(S.failed[0].err || '')}</div>
     <div class="inline"><button class="chip on" data-act="retryFailed">다시 시도</button><button class="chip danger" data-act="dropFailed">버리기</button></div></div>` : ''}
-  <div class="card set"><div class="h">이 기기</div>
-    <div class="item"><span class="k">지금 사용자</span><b>${esc(S.auth.user)}</b></div>
-    <div class="item"><span class="k">내 PIN 바꾸기</span><button class="chip" data-act="changePin">바꾸기</button></div>
-    ${S.queue.length ? `<div class="item"><span class="k">올라가기 기다리는 기록</span><b>${S.queue.length}건</b></div>` : ''}
-    <div class="item"><span class="k">서버<small>${S.auth.url === 'demo' ? '데모 모드' : '구글 시트 연결됨'}</small></span><button class="chip" data-act="resync">새로고침</button></div>
-    <div class="item"><span class="k">서버 버전<small>성장 탭은 3 이상 필요</small></span><b class="${!S.api ? '' : S.api >= 3 ? 'c-ok' : 'c-over'}">${!S.api ? '확인 중…' : S.api >= 3 ? `${S.api} · 최신` : `${S.api} · 새 버전 배포 필요`}</b></div>
-    <div class="item"><span class="k">다른 사람으로 바꾸기</span><button class="chip danger" data-act="logout">로그아웃</button></div></div>
-  <div class="card set"><div class="h">변경 기록<button class="chip" data-act="loadLog">불러오기</button></div>
-    <div class="log">${S.logLines ? (S.logLines.length ? S.logLines.map((l) => `<div>${esc(l[0])} · ${esc(l[1])} · ${esc(l[2])}</div>`).join('') : '<div>기록이 없어요</div>') : ''}</div></div>`;
+  <div class="gh">가족 · 이 기기</div>
+  <div class="grp">${row('가족 · PIN 관리', `${S.users.filter((u) => u.active).length}명`, 'setUsers')}
+    ${row('내 PIN 바꾸기', '', 'changePin')}
+    ${S.queue.length ? `<div class="sb"><span class="k">올라가기 기다리는 기록</span><span class="v">${S.queue.length}건</span></div>` : ''}
+    <button class="sb" data-act="resync"><span class="k">서버<small>${S.auth.url === 'demo' ? '데모 모드' : '구글 시트 연결됨'} · 버전 ${!S.api ? '확인 중' : S.api >= 4 ? `${S.api} 최신` : `${S.api} (새 버전 배포 필요)`}</small></span><span class="v" style="color:var(--ink)">새로고침</span></button>
+    ${row('변경 기록', '', 'setLog')}
+    <button class="sb" data-act="logout"><span class="k danger">로그아웃</span></button></div>
+  ${isAdmin() ? `<div class="gh">관리자</div><div class="grp"><button class="sb" data-act="setReset"><span class="k danger">기록 지우기<small>연습 기록 정리용 · 지우기 전에 시트에 백업해요</small></span><span class="ar">›</span></button></div>` : ''}
+  <div style="height:8px"></div>`;
 }
-function userRow(u, i) {
-  return `<div class="item" data-u="${i}" data-old="${esc(u.oldName !== undefined ? u.oldName : u.name)}"><input type="text" class="u-name" value="${esc(u.name)}" placeholder="이름" maxlength="10" style="max-width:34%">
-    <input type="password" class="u-pin" inputmode="numeric" maxlength="4" placeholder="${u.name ? '새 PIN' : 'PIN 4자리'}" value="${esc(u.draftPin || '')}" style="max-width:34%">
-    <button class="switch ${u.active ? 'on' : ''}" data-act="userActive" aria-label="사용"></button></div>`;
+
+/* 설정 항목 하나만 고치는 창들 */
+function setSheet(title, body, onSave) {
+  openSheet(`<h3>${title}</h3>${body}<button class="primary" id="save">저장</button><button class="ghost" id="cancel">닫기</button>`, (el) => {
+    el.addEventListener('click', (e) => {
+      const b = e.target.closest('button'); if (!b) return;
+      if (b.id === 'cancel') closeSheet();
+      else if (b.id === 'save') { const v = onSave(el); if (typeof v === 'string') { note(v); return; } if (v) { closeSheet(); saveSettings(v); } }
+    });
+  });
+}
+const SET_SHEETS = {
+  setName() { setSheet('아기 이름', `<div class="field"><input id="sv" maxlength="12" placeholder="우리 아기" value="${esc(set('babyName'))}"></div>`, () => ({ babyName: $('#sv').value.trim() })); },
+  setBirth() { setSheet('생일', `<div class="field"><input id="sv" type="date" value="${esc(set('birthDate'))}" max="${dkey(Date.now())}"></div>`, () => ($('#sv').value ? { birthDate: $('#sv').value } : '날짜를 골라주세요')); },
+  setPresets() {
+    setSheet('분유 자주 쓰는 양', `<div class="field"><label>ml, 쉼표로 구분 (최대 400)</label><input id="sv" inputmode="numeric" value="${esc(set('feedPresets'))}"></div>`, () => {
+      const nums = $('#sv').value.split(/[,\s]+/).map(Number).filter((x) => x > 0 && x <= 400);
+      return nums.length ? { feedPresets: nums.join(',') } : '숫자를 쉼표로 구분해 입력해주세요';
+    });
+  },
+  setNight() {
+    setSheet('밤잠 시간대', `<div class="grid2"><div class="field"><label>밤잠 시작 (이후 잠은 밤잠)</label><input id="s1" type="time" value="${esc(set('nightStart'))}"></div>
+      <div class="field"><label>밤잠 끝 (이전 잠도 밤잠)</label><input id="s2" type="time" value="${esc(set('nightEnd'))}"></div></div>`,
+    () => ($('#s1').value && $('#s2').value ? { nightStart: $('#s1').value, nightEnd: $('#s2').value } : '시각을 모두 입력해주세요'));
+  },
+  setTemp() {
+    setSheet('체온 기준', `<div class="grid2"><div class="field"><label>주의 (℃)</label><input id="s1" type="number" step="0.1" inputmode="decimal" value="${esc(set('tempWarn'))}"></div>
+      <div class="field"><label>고열 (℃)</label><input id="s2" type="number" step="0.1" inputmode="decimal" value="${esc(set('tempHigh'))}"></div></div>`, () => {
+      const a = Number($('#s1').value), h = Number($('#s2').value);
+      if (!(a >= 36 && a <= 40 && h >= 36 && h <= 42)) return '체온을 확인해주세요';
+      if (h < a) return '고열 기준이 주의보다 높아야 해요';
+      return { tempWarn: a.toFixed(1), tempHigh: h.toFixed(1) };
+    });
+  },
+  setNightMode() {
+    let v = set('nightMode') === 'midnight' ? 'midnight' : 'start';
+    setSheet('밤잠 집계', `<div class="chips" id="nm"><button class="chip ${v === 'start' ? 'on' : ''}" data-v="start">잠든 날 기준</button><button class="chip ${v === 'midnight' ? 'on' : ''}" data-v="midnight">자정 기준</button></div>
+      <div class="lbl" style="margin-top:10px;line-height:1.6">잠든 날 기준: 밤 전체를 잠든 날로 셈<br>자정 기준: 0시에서 나눠 각 날짜에 셈</div>`, () => ({ nightMode: v }));
+    $('#nm').addEventListener('click', (e) => { const b = e.target.closest('[data-v]'); if (!b) return; v = b.dataset.v; $('#nm').querySelectorAll('[data-v]').forEach((x) => x.classList.toggle('on', x === b)); });
+  },
+  setPlan() {
+    const cur = curApply(), names = Object.keys(S.plans);
+    openSheet(`<h3>일정표</h3>
+      <div class="sb" style="padding:4px 0 10px"><span class="k">지금 적용 중<small>${cur ? `${esc(cur.from)}부터` : ''}</small></span><b>${esc(cur ? cur.name : '-')}</b></div>
+      <div class="sec" style="margin-top:4px">일정 바꾸기 <span class="lbl">(지난 날짜는 그날 일정 그대로 비교돼요)</span></div>
+      <div class="field"><select id="applyName">${names.map((n) => `<option ${cur && cur.name === n ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select></div>
+      <div class="inline"><input type="date" id="applyFrom" value="${dkey(Date.now())}"><button class="chip on" style="flex:0 0 auto" id="apply">이 날부터 적용</button></div>
+      <div class="sec">일정 내용 고치기</div>
+      <div class="chips">${names.map((n) => `<button class="chip" data-edit="${esc(n)}">${esc(n)} 편집</button>`).join('')}<button class="chip" data-edit="">＋ 새 일정</button></div>
+      <button class="ghost" id="cancel">닫기</button>`, (el) => {
+      el.addEventListener('click', async (e) => {
+        const b = e.target.closest('button'); if (!b) return;
+        if (b.id === 'cancel') { closeSheet(); return; }
+        if (b.dataset.edit != null) { planSheet(b.dataset.edit); return; }
+        if (b.id !== 'apply' || b.disabled) return;
+        const name = $('#applyName').value, from = $('#applyFrom').value;
+        if (!from) { note('적용 시작일을 골라주세요'); return; }
+        b.disabled = true;
+        try { const j = await call('applyPlan', { name, from }); S.apply = j.data.apply; saveCache(); closeSheet(); render(); note(`${from}부터 ${name} 적용`); }
+        catch (err) { b.disabled = false; note(errMsg(err)); }
+      });
+    });
+  },
+  setUsers() { usersSheet(S.users.map((u) => ({ name: u.name, active: u.active, oldName: u.name, admin: u.admin }))); },
+  async setLog() {
+    openSheet('<h3>변경 기록</h3><div class="log" id="logBox"><div>불러오는 중…</div></div><button class="ghost" id="cancel">닫기</button>', (el) => {
+      el.addEventListener('click', (e) => { if (e.target.id === 'cancel') closeSheet(); });
+    });
+    try {
+      const j = await call('getLog', {});
+      const box = $('#logBox'); if (!box) return;
+      box.innerHTML = j.data.log.length ? j.data.log.map((l) => `<div>${esc(l[0])} · ${esc(l[1])} · ${esc(l[2])}</div>`).join('') : '<div>기록이 없어요</div>';
+    } catch (e) { const box = $('#logBox'); if (box) box.innerHTML = '<div>불러오지 못했어요</div>'; }
+  },
+  setReset() { resetSheet(); },
+};
+/* 가족·PIN: 맨 위 사람이 관리자(기록 지우기 가능). 순서는 바꾸지 않는다 */
+function usersSheet(list) {
+  const draw = () => `<h3>가족 · PIN 관리</h3><div class="users">${list.map((u, i) => `<div class="item" data-u="${i}">
+      <input class="u-name" value="${esc(u.name)}" placeholder="이름" maxlength="10" style="flex:1.1" ${i === 0 && !isAdmin() ? 'disabled' : ''}>
+      <input class="u-pin" type="password" inputmode="numeric" maxlength="4" placeholder="${i === 0 && !isAdmin() ? '관리자만 변경' : u.oldName ? '새 PIN' : 'PIN 4자리'}" value="${esc(u.pin || '')}" style="flex:1" ${i === 0 && !isAdmin() ? 'disabled' : ''}>
+      ${i === 0 ? '<span class="badge2">관리자</span>' : `<button class="switch ${u.active ? 'on' : ''}" data-i="${i}" aria-label="사용"></button>`}</div>`).join('')}</div>
+    <button class="chip" id="add" style="margin-top:6px">＋ 사람 추가</button>
+    <div class="lbl" style="margin-top:8px;line-height:1.6">PIN은 바꿀 때만 입력하세요. 비워두면 그대로예요.<br>스위치를 끄면 그 사람은 앱을 못 써요(기록은 남음).</div>
+    <button class="primary" id="save">저장</button><button class="ghost" id="cancel">닫기</button>`;
+  const read = (el) => el.querySelectorAll('[data-u]').forEach((row) => {
+    const u = list[row.dataset.u];
+    u.name = row.querySelector('.u-name').value.trim(); u.pin = row.querySelector('.u-pin').value.trim();
+  });
+  openSheet(draw(), (el) => {
+    el.addEventListener('click', async (e) => {
+      const b = e.target.closest('button'); if (!b) return;
+      if (b.id === 'cancel') { closeSheet(); return; }
+      read(el);
+      if (b.dataset.i) { list[b.dataset.i].active = !list[b.dataset.i].active; b.classList.toggle('on', list[b.dataset.i].active); return; }
+      if (b.id === 'add') { list.push({ name: '', active: true }); el.innerHTML = draw(); return; }
+      if (b.id !== 'save' || b.disabled) return;
+      list[0].active = true;
+      const rows = list.filter((u) => u.name);
+      if (rows.some((u) => u.pin && !/^\d{4}$/.test(u.pin))) { note('PIN은 숫자 4자리로 해주세요'); return; }
+      if (rows.some((u) => !u.oldName && !u.pin)) { note('새 사람은 PIN을 입력해주세요'); return; }
+      if (new Set(rows.map((u) => u.name)).size !== rows.length) { note('이름이 겹쳐요'); return; }
+      const me = rows.find((u) => u.oldName === S.auth.user);
+      b.disabled = true;
+      try {
+        const j = await call('saveUsers', { users: rows.map((u) => ({ name: u.name, pin: u.pin || '', active: u.active, oldName: u.oldName || '' })) });
+        S.users = j.data.users;
+        if (me) { S.auth.user = me.name; if (me.pin) S.auth.pin = me.pin; LS.set('auth', S.auth); if (!me.active) { closeSheet(); authFailed('사용이 중지됐어요.'); return; } }
+        saveCache(); closeSheet(); render(); note('저장했어요');
+      } catch (err) { b.disabled = false; note(errMsg(err)); }
+    });
+  });
+}
+/* 기록 지우기(관리자만): 범위 선택 → PIN 다시 입력 → '지우기' 입력. 서버가 시트에 백업한 뒤 비움 */
+function resetSheet() {
+  if (S.api && S.api < 4) { note('서버 코드를 새 버전(4)으로 배포한 뒤에 쓸 수 있어요'); return; }
+  let scope = '';
+  openSheet(`<h3>기록 지우기</h3>
+    <div class="warnbox">지운 기록은 앱에서 사라지고 모든 가족 휴대폰에서도 지워져요.<br>지우기 전에 구글 시트에 '기록_백업_날짜' 탭으로 복사해 둬요.</div>
+    <div class="sec" style="margin-top:0">무엇을 지울까요?</div>
+    <div class="chips" id="sc" style="flex-direction:column;align-items:stretch">
+      <button class="chip" data-s="daily" style="text-align:left;white-space:normal">① 매일 기록만<br><span class="lbl">수유·잠·기저귀·목욕·체온·약·산책·메모·이유식·하루 메모 (키·몸무게·접종·검진·병원·발달·기념일은 남김)</span></button>
+      <button class="chip" data-s="all" style="text-align:left;white-space:normal">② 전부<br><span class="lbl">위 기록 + 성장 탭 기록까지 모두</span></button></div>
+    <div class="lbl" style="margin:10px 0">일정표·분유 양·체온 기준 같은 설정과 가족·PIN은 그대로예요.</div>
+    <div class="field"><label>내 PIN 다시 입력</label><input id="rp" type="password" inputmode="numeric" maxlength="4"></div>
+    <div class="field"><label>확인을 위해 <b>지우기</b>라고 써주세요</label><input id="rc" maxlength="5" autocomplete="off"></div>
+    <button class="primary red" id="go">기록 지우기</button><button class="ghost" id="cancel">닫기</button>`, (el) => {
+    el.addEventListener('click', async (e) => {
+      const b = e.target.closest('button'); if (!b) return;
+      if (b.id === 'cancel') { closeSheet(); return; }
+      if (b.dataset.s) { scope = b.dataset.s; el.querySelectorAll('[data-s]').forEach((x) => x.classList.toggle('on', x === b)); return; }
+      if (b.id !== 'go' || b.disabled) return;
+      if (!scope) { note('지울 범위를 골라주세요'); return; }
+      if ($('#rp').value.trim() !== S.auth.pin) { note('PIN이 맞지 않아요'); return; }
+      if ($('#rc').value.trim() !== '지우기') { note("'지우기'라고 정확히 써주세요"); return; }
+      b.disabled = true; b.textContent = '지우는 중…'; S.resetting = true;
+      try {
+        if (S.queue.length) await flush();   // 지우기 전 기록까지 먼저 올려서 백업에 들어가게
+        if (S.queue.length || S.failed.length) {
+          b.disabled = false; b.textContent = '기록 지우기';
+          note(S.failed.length ? '저장 못 한 기록이 있어요. 설정에서 먼저 정리해주세요.' : '아직 올라가지 않은 기록이 있어요. 인터넷 연결 후 다시 해주세요.'); return;
+        }
+        const j = await call('resetRecords', { scope, pin: $('#rp').value.trim(), confirm: '지우기' });
+        closeSheet(); S.tab = 'home'; render();
+        note(`지웠어요 · 백업: ${j.data.backup}`);
+      } catch (err) { b.disabled = false; b.textContent = '기록 지우기'; note(errMsg(err)); }
+      finally { S.resetting = false; }
+    });
+  });
 }
 
 /* 로그인
@@ -944,6 +1271,7 @@ async function tryLogin() {
     auth.user = j.user;
     const sameServer = LS.get('lastUrl', '') === url;
     S.auth = auth; LS.set('auth', auth); LS.set('lastUrl', url);
+    seenReset(j.reset, j.resetScope, true);
     if (!sameServer || !loadCache()) { S.serverTime = 0; S.recs = {}; dirty(); S.loading = true; }
     S.tab = 'home'; render(true);
     sync(true).finally(() => { if (S.loading) { S.loading = false; render(); } });
@@ -1071,12 +1399,45 @@ async function dupCheck(type, fn) {
   const d = live().filter((r) => r.type === type && Math.abs(now - r.start) < 10 * MIN && r.by !== S.auth.user && (!fn || fn(r))).pop();
   if (!d) return true;
   const x = recText(d);
-  return ask(`<b>${esc(d.by)}</b>님이 ${Math.max(1, Math.round((now - d.start) / MIN))}분 전에 <b>${esc(x.t)}</b>을(를) 기록했어요.<br>그래도 추가할까요?`);
+  return ask(`${Math.max(1, Math.round((now - d.start) / MIN))}분 전에 다른 가족이 <b>${esc(x.t)}</b>을(를) 기록했어요.<br>그래도 추가할까요?`);
 }
 const LABEL = { bath: '목욕', walk: '산책' };
 
+let lookT = 0;
 const ACTIONS = {
-  tab(el) { S.tab = el.dataset.tab; if (S.tab === 'day') S.day = dkey(Date.now()); S.logLines = null; closeToast(); render(); window.scrollTo(0, 0); },
+  tab(el) {
+    S.tab = el.dataset.tab;
+    if (S.tab === 'day') { S.day = dkey(Date.now()); S.dayAll = false; S.planAll = false; }
+    // 하단 탭을 누르면 패턴·성장은 첫 화면부터
+    if (el.closest('#tabs')) { if (S.tab === 'pattern') S.pat.sub = 'week'; if (S.tab === 'growth') GR.sub = 'growth'; }
+    closeToast(); render(); window.scrollTo(0, 0);
+  },
+  patSub(el) { S.pat.sub = el.dataset.k; render(); window.scrollTo(0, 0); },
+  dayMore(el) { S[el.dataset.k] = !S[el.dataset.k]; render(); },
+  alertGo(el) {
+    const k = el.dataset.k;
+    if (k === 'memo') { S.tab = 'day'; S.day = dkey(Date.now()); } else { S.tab = 'growth'; GR.sub = k === 'anni' ? 'anni' : 'health'; if (k === 'health') GR.health = 'vax'; }
+    closeToast(); render(); window.scrollTo(0, 0);
+  },
+  goPlan() { const c = curApply(); planSheet(c ? c.name : (Object.keys(S.plans)[0] || '')); },
+  look(el) {
+    // 화면 전체를 다시 그리지 않고 고른 표시만 바꾼다(글씨체가 바뀌면 다시 그리기가 무거움)
+    const k = el.dataset.k, v = el.dataset.v;
+    // 글씨체는 화면 전체 글자를 다시 배치해야 해서 무거움: 고른 표시를 먼저 보여주고 바로 다음에 적용
+    if (k === 'font') { LOOK.set(k, v, true); clearTimeout(lookT); lookT = setTimeout(() => LOOK.apply(), 60); } else LOOK.set(k, v);
+    document.querySelectorAll(`[data-act="look"][data-k="${k}"]`).forEach((b) => {
+      const on = b.dataset.v === v;
+      b.classList.toggle('on', on);
+      if (k === 'theme') b.lastChild.textContent = (LOOK.themes.find((t) => t.k === b.dataset.v) || {}).n + (on ? ' ✓' : '');
+    });
+  },
+  async photo(el) {
+    const r = await LOOK.pickPhoto(el.dataset.slot);
+    if (r === 'ok') { render(); note('사진을 바꿨어요'); }
+    else if (r === 'bad') note('이 사진은 열 수 없어요. 다른 사진을 골라주세요.');
+    else if (r === 'full') note('휴대폰 저장 공간이 부족해 사진을 저장하지 못했어요');
+  },
+  photoClear(el) { LOOK.clearPhoto(el.dataset.slot); render(); },
   async quick(el) {
     const type = el.dataset.type;
     if (type === 'bath' && !(await dupCheck('bath'))) return;
@@ -1113,7 +1474,7 @@ const ACTIONS = {
   day(el) {
     const n = addDays(S.day, Number(el.dataset.d));
     if (n > dkey(Date.now())) return;
-    S.day = n; render();
+    S.day = n; S.dayAll = false; S.planAll = false; render();
     ensureRange(n);
   },
   pin(el) {
@@ -1123,29 +1484,6 @@ const ACTIONS = {
     if (pinBuf.length === 4) tryLogin();
   },
   toggle(el) { const k = el.dataset.k; saveSettings({ [k]: set(k) === 'true' ? 'false' : 'true' }); },
-  applyPlan: busy(async () => {
-    const name = $('#applyName').value, from = $('#applyFrom').value;
-    if (!from) { note('적용 시작일을 골라주세요'); return; }
-    try { const j = await call('applyPlan', { name, from }); S.apply = j.data.apply; saveCache(); render(); note(`${from}부터 ${name} 적용`); }
-    catch (e) { note(errMsg(e)); }
-  }),
-  editPlan(el) { planSheet(el.dataset.name); },
-  newPlan() { planSheet(''); },
-  addUser() { S.users = readUserRows().map((u) => ({ name: u.name, active: u.active, draftPin: u.pin, oldName: u.oldName })); S.users.push({ name: '', active: true }); render(true); },
-  userActive(el) { el.classList.toggle('on'); },
-  saveUsers: busy(async () => {
-    const list = readUserRows().filter((u) => u.name);
-    if (list.some((u) => u.pin && !/^\d{4}$/.test(u.pin))) { note('PIN은 숫자 4자리로 해주세요'); return; }
-    if (new Set(list.map((u) => u.name)).size !== list.length) { note('이름이 겹쳐요'); return; }
-    const me = list.find((u) => u.oldName === S.auth.user);
-    try {
-      const j = await call('saveUsers', { users: list });
-      S.users = j.data.users;
-      if (me) { S.auth.user = me.name; if (me.pin) S.auth.pin = me.pin; LS.set('auth', S.auth); if (!me.active) { authFailed('사용이 중지됐어요.'); return; } }
-      saveCache(); render(true); note('사용자 저장됨');
-    } catch (e) { note(errMsg(e)); }
-  }),
-  loadLog: busy(async () => { try { const j = await call('getLog', {}); S.logLines = j.data.log; render(); } catch (e) { note('불러오지 못했어요'); } }),
   resync() { note('새로 불러오는 중…'); sync(true); },
   changePin() { pinSheet(false); },
   patMode(el) { if (S.pat.mode === el.dataset.m) return; S.pat.mode = el.dataset.m; S.pat.offset = 0; render(); },
@@ -1156,7 +1494,7 @@ const ACTIONS = {
     ensureRange(patKeys()[0]);
   },
   patToggle(el) { const t = patToggles(); t[el.dataset.k] = !t[el.dataset.k]; LS.set('patToggles', t); render(); },
-  patDay(el) { S.day = el.dataset.d; S.tab = 'day'; closeToast(); render(); window.scrollTo(0, 0); ensureRange(S.day); },
+  patDay(el) { S.day = el.dataset.d; S.tab = 'day'; S.dayAll = false; S.planAll = false; closeToast(); render(); window.scrollTo(0, 0); ensureRange(S.day); },
   patPeriod(el) { S.pat.period = Number(el.dataset.n); render(); ensureRange(addDays(dkey(Date.now()), -S.pat.period - 7)); },
   patTrend(el) { S.pat.trend = el.dataset.t; render(); },
   addPast() {
@@ -1185,7 +1523,7 @@ const ACTIONS = {
     if (await ask(`이 기기에서 로그아웃할까요?${n ? `<br><span class="lbl">아직 올라가지 않은 기록 ${n}건은 다시 로그인하면 이어서 올라가요.</span>` : ''}`, '로그아웃')) logout();
   },
 };
-Object.assign(ACTIONS, GROWTH_ACTIONS);
+Object.assign(ACTIONS, GROWTH_ACTIONS, SET_SHEETS);
 /* 서버를 기다리는 버튼은 누르는 동안 막아 두 번 눌리지 않게 */
 function busy(fn) {
   let running = false;
@@ -1194,11 +1532,6 @@ function busy(fn) {
     running = true; if (el) el.disabled = true;
     try { await fn(el); } finally { running = false; if (el && el.isConnected) el.disabled = false; }
   };
-}
-function readUserRows() {
-  return [...document.querySelectorAll('#users .item')].map((row) => ({
-    name: row.querySelector('.u-name').value.trim(), oldName: row.dataset.old || '', pin: row.querySelector('.u-pin').value.trim(), active: row.querySelector('.switch').classList.contains('on'),
-  }));
 }
 
 /* 설정 저장: 순서대로 하나씩 보내 서로 덮어쓰지 않게 */
@@ -1366,7 +1699,7 @@ function editSheet(arg) {
     <div class="field"><label>양</label><div class="inline"><input type="number" id="ev" value="${esc(r.value)}"><select id="e2">${['g', '숟가락'].map((u) => `<option ${r.d2 === u ? 'selected' : ''}>${u}</option>`).join('')}</select></div></div>
     <div class="field"><label>반응</label><select id="e3">${FOOD_REACT.map((n) => `<option ${r.d3 === n ? 'selected' : ''}>${n}</option>`).join('')}</select></div>`;
   body += `<div class="field"><label>${r.type === 'memo' ? '내용' : '메모'}</label><textarea id="em" rows="2" maxlength="300">${esc(r.memo)}</textarea></div>`;
-  openSheet(`<h3>${ART.icons[T.i]}${T.n} ${isNew ? '기록 추가' : '기록 수정'}</h3>${body}${isNew ? '' : `<div class="lbl">기록: ${esc(r.by)}</div>`}
+  openSheet(`<h3>${ART.icons[T.i]}${T.n} ${isNew ? '기록 추가' : '기록 수정'}</h3>${body}
     <button class="primary" id="save">${isNew ? '추가' : '저장'}</button>${isNew ? '<button class="ghost" id="cancel">닫기</button>' : '<button class="ghost danger" id="del">삭제</button>'}`, (el) => {
     el.addEventListener('change', (e) => { if ((e.target.id === 'es' || e.target.id === 'ee') && $('#ek')) $('#ek').value = ''; });
     el.addEventListener('click', async (e) => {
@@ -1473,7 +1806,9 @@ async function ensureRange(key) {
   const from = dstart(addDays(key, -30)), to = S.loadedFrom;
   rangeLoading = (async () => {
     try {
+      const w0 = S.wipeN || 0;
       const j = await call('range', { from, to });
+      if ((S.wipeN || 0) !== w0) return;   // 응답 도중 기록 지우기: 옛 기록을 되살리지 않음
       mergeRecs(j.data.recs); S.loadedFrom = Math.min(S.loadedFrom, from); bgRender();
     } catch (e) { note('지난 기록을 불러오지 못했어요'); }
   })();
