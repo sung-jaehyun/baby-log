@@ -1249,7 +1249,7 @@ let pinBuf = '';
 })();
 function viewLogin() {
   const known = API_URL || LS.get('lastUrl', '');
-  return `<div class="login"><div class="char">${ART.chars.awake}</div><div class="name" style="font-size:20px;font-weight:600">아기 기록</div>
+  return `<div class="login"><div class="char">${ART.chars.awake}</div><div class="name" style="font-size:20px;font-weight:600">은우랑</div>
     ${!API_URL ? `<div style="margin:16px 0 0;${known ? 'display:none' : ''}" id="urlBox"><input id="apiUrl" placeholder="서버 주소 (https://script.google.com/...)" value="${esc(known)}"></div>
       ${known ? '<button class="lbl" style="margin-top:8px" onclick="document.getElementById(\'urlBox\').style.display=\'\';this.remove()">서버 주소 바꾸기</button>' : ''}` : ''}
     <div class="lbl" style="margin-top:14px">PIN 4자리를 입력해주세요</div>
