@@ -513,16 +513,22 @@ function renderTabs() {
   const el = $('#tabs');
   if (el._html !== html) { el.innerHTML = html; el._html = html; }
 }
-/* 홈은 한 화면에 들어오게: 남는 높이만큼 원형 시계를 키우고, 모자라면 줄인다(110~210px) */
+/* 홈 원형 시계 크기: 남는 높이만큼 키우고 모자라면 줄인다(150~200px).
+   가로는 설명 칸 옆에 오른쪽 여백이 남도록 카드 폭에 맞춰 상한을 둔다 */
+const CLOCK_MIN = 150, CLOCK_MAX = 200;
 function fitClock() {
-  const app = $('#app'), c = $('.ccard .clk');
+  const app = $('#app'), c = $('.ccard .clk'), card = $('.ccard'), leg = $('.ccard .leg');
   if (!c) return;
   const z = Number(document.documentElement.style.zoom) || 1;
+  const cs = getComputedStyle(card);
+  const inner = card.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+  const wMax = Math.floor(inner - (leg ? leg.offsetWidth : 0) - parseFloat(cs.columnGap || 0) - 12);
+  const hi = Math.max(110, Math.min(CLOCK_MAX, wMax)), lo = Math.min(CLOCK_MIN, hi);
   // #app 아래 여백이 하단 탭 높이만큼이라, 여백까지 포함해 화면 높이에 맞추면 탭에 가리지 않는다
   for (let i = 0; i < 3; i++) {
     const room = window.innerHeight / z - (app.offsetTop + app.offsetHeight);
     const cur = c.offsetHeight;
-    const next = Math.round(Math.max(110, Math.min(210, cur + room)));
+    const next = Math.round(Math.max(lo, Math.min(hi, cur + room)));
     if (Math.abs(next - cur) < 2) break;
     app.style.setProperty('--cs', `${next}px`);
   }
@@ -555,10 +561,10 @@ function viewHome() {
   const last = live().filter((r) => !GROWTH_ONLY.has(r.type)).pop();
   return `<div class="home">${header()}${statusCard(st)}
   <button class="card ccard" data-act="tab" data-tab="day"><div class="clk">${clockSvg(today, sm, true)}</div>
-    <div class="leg"><div><span><i style="background:var(--feed)"></i>수유</span>${sm.feedN}회 · ${sm.feedMl}ml</div>
-      <div><span><i style="background:var(--nap)"></i>낮잠</span>${sm.napN}회 · ${minShort(sm.napMin)}</div>
-      <div><span><i style="background:var(--night)"></i>${mid ? '오늘 밤잠' : '어젯밤'}</span>${ns.tot ? minShort(ns.tot) : '-'}</div>
-      <div><span><i style="background:var(--diaper)"></i>기저귀</span>소${sm.pee} · 대${sm.poo}</div>
+    <div class="leg"><span><i style="background:var(--feed)"></i>수유</span><b>${sm.feedN}회 · ${sm.feedMl}ml</b>
+      <span><i style="background:var(--nap)"></i>낮잠</span><b>${sm.napN}회 · ${minShort(sm.napMin)}</b>
+      <span><i style="background:var(--night)"></i>${mid ? '오늘 밤잠' : '어젯밤'}</span><b>${ns.tot ? minShort(ns.tot) : '-'}</b>
+      <span><i style="background:var(--diaper)"></i>기저귀</span><b>소${sm.pee} · 대${sm.poo}</b>
       <div class="go">하루 탭에서 자세히 →</div></div></button>
   <div class="btns">
     <button class="btn-big" data-act="feed"><span class="ic t-feed">${ART.icons.feed}</span>분유</button>

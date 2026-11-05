@@ -331,7 +331,11 @@ async def main():
         check('오늘 하루 메모는 홈 알림으로', '병원 다녀옴' in home)
         await pg.click('#tabs [data-tab="home"]'); await pg.wait_for_timeout(200)
         n_al = await pg.evaluate("document.querySelectorAll('.alert').length")
-        check('알림 여러 개면 원형 시계가 가장 작게(110px)', n_al < 2 or await pg.evaluate("$('.ccard .clk').offsetHeight") <= 112)
+        check('알림 여러 개면 원형 시계가 가장 작게(150px)', n_al < 2 or abs(await pg.evaluate("$('.ccard .clk').offsetHeight") - 150) <= 2)
+        lay = await pg.evaluate("""(()=>{const c=$('.ccard').getBoundingClientRect(), k=$('.ccard .clk').getBoundingClientRect(), l=$('.ccard .leg').getBoundingClientRect();
+          const sp=$('.ccard .leg span').getBoundingClientRect(), b=$('.ccard .leg b').getBoundingClientRect();
+          return {left:k.left-c.left, right:c.right-l.right, gap:b.left-sp.right}})()""")
+        check('원형 시계 옆 설명: 오른쪽 여백 24px 이상, 항목명·값 사이 60px 이하', lay['right'] >= 24 and lay['gap'] <= 60, lay)
         await pg.evaluate("delete S.memos[dkey(Date.now())]; render()")
         fit = await pg.evaluate("[document.documentElement.scrollHeight, innerHeight, document.querySelectorAll('.alert').length]")
         check('홈이 한 화면에 들어옴(390×844, 알림 1개)', fit[0] <= fit[1] + 1 and fit[2] == 1, fit)
