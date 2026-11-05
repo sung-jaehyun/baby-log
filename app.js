@@ -89,7 +89,7 @@ function live() {
 async function call(action, data, auth = S.auth) {
   if (!auth) { const e = new Error('로그인이 필요해요'); e.code = 'pin'; throw e; }
   if (auth.url === 'demo') {
-    try { return await DEMO.call(action, data, auth.pin); } catch (e) { e.pinUsed = auth.pin; throw e; }
+    try { const j = await DEMO.call(action, data, auth.pin); S.api = j.api || 1; return j; } catch (e) { e.pinUsed = auth.pin; throw e; }
   }
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), 40000);
@@ -97,6 +97,7 @@ async function call(action, data, auth = S.auth) {
     const res = await fetch(auth.url, { method: 'POST', body: JSON.stringify({ action, pin: auth.pin, data }), headers: { 'Content-Type': 'text/plain;charset=utf-8' }, redirect: 'follow', signal: ctrl.signal });
     const j = await res.json();
     if (!j.ok) { const e = new Error(j.err || '서버 오류'); e.server = true; e.code = j.code || 'error'; e.pinUsed = auth.pin; throw e; }
+    S.api = j.api || 1;
     return j;
   } finally { clearTimeout(t); }
 }
@@ -890,6 +891,7 @@ function viewSettings() {
     <div class="item"><span class="k">내 PIN 바꾸기</span><button class="chip" data-act="changePin">바꾸기</button></div>
     ${S.queue.length ? `<div class="item"><span class="k">올라가기 기다리는 기록</span><b>${S.queue.length}건</b></div>` : ''}
     <div class="item"><span class="k">서버<small>${S.auth.url === 'demo' ? '데모 모드' : '구글 시트 연결됨'}</small></span><button class="chip" data-act="resync">새로고침</button></div>
+    <div class="item"><span class="k">서버 버전<small>성장 탭은 3 이상 필요</small></span><b class="${!S.api ? '' : S.api >= 3 ? 'c-ok' : 'c-over'}">${!S.api ? '확인 중…' : S.api >= 3 ? `${S.api} · 최신` : `${S.api} · 새 버전 배포 필요`}</b></div>
     <div class="item"><span class="k">다른 사람으로 바꾸기</span><button class="chip danger" data-act="logout">로그아웃</button></div></div>
   <div class="card set"><div class="h">변경 기록<button class="chip" data-act="loadLog">불러오기</button></div>
     <div class="log">${S.logLines ? (S.logLines.length ? S.logLines.map((l) => `<div>${esc(l[0])} · ${esc(l[1])} · ${esc(l[2])}</div>`).join('') : '<div>기록이 없어요</div>') : ''}</div></div>`;

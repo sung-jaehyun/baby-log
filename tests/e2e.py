@@ -283,6 +283,8 @@ async def main():
 
         leaked = await pg.evaluate("JSON.parse(localStorage.demoDB).recs.filter(r=>'_dk' in r||'_dks' in r||'_local' in r||'_nk' in r).length")
         check('서버로 보내는 기록에 내부 표시값 없음', leaked == 0, leaked)
+        await pg.click('[data-act="tab"][data-tab="home"]'); await pg.click('.gear[data-tab="settings"]')
+        check('설정에 서버 버전 표시', '3 · 최신' in await pg.inner_text('#app'))
         check('화면 오류 없음', not errs, errs)
         await b.close()
     print('\n결과:', '모두 통과' if not FAILS else f'{len(FAILS)}건 실패: ' + ', '.join(FAILS))
