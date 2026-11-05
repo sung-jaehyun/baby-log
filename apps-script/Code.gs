@@ -3,9 +3,11 @@
  * 이 파일 전체를 Apps Script 편집기의 Code.gs에 붙여넣고, setup 실행 후 "웹 앱"으로 배포하세요.
  */
 const TZ = 'Asia/Seoul';
-const API_VERSION = 3;
+const API_VERSION = 4;
 /** 성장 탭 기록과 이유식은 오래돼도 항상 앱에 보낸다 */
 const LONG_TYPES = { growth: 1, vax: 1, checkup: 1, hospital: 1, milestone: 1, anniv: 1, food: 1 };
+/** '매일 기록만 지우기'에서 남기는 종류(성장 탭 기록) */
+const GROWTH_TYPES = { growth: 1, vax: 1, checkup: 1, hospital: 1, milestone: 1, anniv: 1 };
 const KEEP_DAYS = 45;
 const MAX_FAILS = 10;              // PIN을 이만큼 틀리면
 const LOCK_SECONDS = 3600;         // 이 시간 동안 잠금
@@ -38,7 +40,7 @@ const PLAN_3 = {
 };
 
 /* 쓰기 요청만 잠금을 잡는다(읽기는 잠금 없이 빠르게) */
-const WRITES = { batch: 1, setSettings: 1, savePlan: 1, applyPlan: 1, saveUsers: 1, changeMyPin: 1 };
+const WRITES = { batch: 1, setSettings: 1, savePlan: 1, applyPlan: 1, saveUsers: 1, changeMyPin: 1, resetRecords: 1 };
 
 /* ---------- 진입점 ---------- */
 function doGet() { return out_({ ok: true, msg: '아기 기록 서버가 동작 중입니다.' }); }
@@ -69,7 +71,8 @@ function doPost(e) {
       ? withLock_(function () { const r = fn(req.data || {}, user, req.pin); bumpRev_(); rev = rev_(); return r; })
       : (function () { rev = rev_(); if (isArchiving_()) throw new Error('잠시 정리 중(lock)'); return fn(req.data || {}, user, req.pin); })();
     // 읽기는 '읽기 시작 전' 번호를 돌려준다: 읽는 도중 들어온 기록을 다음 확인 때 놓치지 않게
-    return out_({ ok: true, api: API_VERSION, user: user, now: Date.now(), rev: rev, data: data });
+    // reset: 마지막으로 기록을 지운 시각(앱이 이 값이 바뀐 걸 보면 휴대폰 저장본을 비우고 새로 받음)
+    return out_({ ok: true, api: API_VERSION, user: user, now: Date.now(), rev: rev, reset: resetAt_(), data: data });
   } catch (err) {
     return out_({ ok: false, code: isTransient_(err) ? 'retry' : 'error', err: msg_(err) });
   }
@@ -87,6 +90,10 @@ function props_() { return PropertiesService.getScriptProperties(); }
 function isReady_() { return props_().getProperty('ready') === '3'; }
 function rev_() { return Number(props_().getProperty('rev') || 0); }
 function bumpRev_() { props_().setProperty('rev', String(rev_() + 1)); }
+function resetAt_() { return Number(props_().getProperty('resetAt') || 0); }
+/** 맨 위(첫 줄) 사람이 관리자: 기록 지우기는 이 사람만 */
+function adminName_() { const u = readUsers_(); return u.length ? u[0].name : ''; }
+function pubUsers_() { const a = adminName_(); return readUsers_().map(function (u) { return { name: u.name, active: u.active, admin: u.name === a }; }); }
 
 /* ---------- API ---------- */
 const API = {
@@ -96,7 +103,7 @@ const API = {
     const since = Date.now() - KEEP_DAYS * 864e5;
     return {
       settings: readSettings_(), plans: readPlans_(), apply: readApply_(), memos: readMemos_(),
-      users: readUsers_().map(function (u) { return { name: u.name, active: u.active }; }),
+      users: pubUsers_(),
       recs: readRecs_(function (r) { return r.start >= since || r.updated >= since || LONG_TYPES[r.type]; }),
     };
   },
@@ -106,7 +113,7 @@ const API = {
     const since = Number(d.since || 0);
     return {
       settings: readSettings_(), plans: readPlans_(), apply: readApply_(), memos: readMemos_(),
-      users: readUsers_().map(function (u) { return { name: u.name, active: u.active }; }),
+      users: pubUsers_(),
       recs: readRecs_(function (r) { return r.updated > since; }),
     };
   },
@@ -120,9 +127,12 @@ const API = {
   batch: function (d, user) {
     const s = sh_('rec');
     const names = readUsers_().map(function (u) { return u.name; });
+    const reset = resetAt_();
     let stop = false;
     const results = (d.ops || []).map(function (op) {
       if (stop) return { ok: false, code: 'retry' };
+      // 기록을 지우기 전에 만든 변경(인터넷이 끊겨 늦게 도착한 것)은 받지 않는다: 지운 기록이 되살아나지 않게
+      if (reset && !(Number(op.at) > reset)) return { ok: false, code: 'reset' };
       try {
         if (op.op === 'add') return { ok: true, rec: addRec_(s, op.rec, user, names) };
         if (op.op === 'update') return { ok: true, rec: updateRec_(s, Object.assign({}, op.rec, { id: op.id })) };
@@ -188,7 +198,7 @@ const API = {
     s.getRange(2, 1, rows.length, 3).setValues(rows);
     log_(user, '사용자', cur.map(function (c) { return c.name + (c.active ? '' : '(중지)'); }).join(','),
       rows.map(function (r) { return r[0] + (r[2] === 'Y' ? '' : '(중지)'); }).join(','));
-    return { users: readUsers_().map(function (u) { return { name: u.name, active: u.active }; }) };
+    return { users: pubUsers_() };
   },
 
   changeMyPin: function (d, user) {
@@ -202,6 +212,33 @@ const API = {
     s.getRange(row, 2).setValue(pin);
     log_(user, 'PIN 변경', '', '');
     return {};
+  },
+
+  /** 기록 지우기(관리자만). scope: 'daily' = 매일 기록·하루메모만 / 'all' = 성장 기록까지 전부.
+   *  지우기 전에 '기록_백업_날짜' 시트로 통째로 복사해 둔다(일정표·설정·사용자는 그대로) */
+  resetRecords: function (d, user, pin) {
+    if (user !== adminName_()) throw new Error('기록 지우기는 관리자(사용자 목록 맨 위)만 할 수 있어요.');
+    if (String(d.confirm || '') !== '지우기') throw new Error('확인 글자가 맞지 않아요.');
+    if (String(d.pin || '') !== String(pin)) throw new Error('PIN이 맞지 않아요.');
+    const scope = d.scope === 'all' ? 'all' : 'daily';
+    const ss = SpreadsheetApp.getActive();
+    const stamp = Utilities.formatDate(new Date(), TZ, 'yyyyMMdd_HHmmss');
+    const s = sh_('rec'), m = sh_('memo');
+    s.copyTo(ss).setName('기록_백업_' + stamp);
+    m.copyTo(ss).setName('하루메모_백업_' + stamp);
+    SpreadsheetApp.flush();
+    const W = SHEETS.rec.head.length, n = s.getLastRow() - 1;
+    let kept = [];
+    if (n > 0) {
+      if (scope === 'daily') kept = s.getRange(2, 1, n, W).getValues().filter(function (r) { return r[0] && GROWTH_TYPES[String(r[1])]; });
+      s.getRange(2, 1, n, W).clearContent();
+      if (kept.length) s.getRange(2, 1, kept.length, W).setValues(kept);
+      if (s.getLastRow() > kept.length + 1) s.deleteRows(kept.length + 2, s.getLastRow() - kept.length - 1);
+    }
+    if (m.getLastRow() > 1) m.deleteRows(2, m.getLastRow() - 1);
+    props_().setProperty('resetAt', String(Date.now()));
+    log_(user, '기록 지우기', '', (scope === 'all' ? '전부' : '매일 기록만') + ' · 백업: 기록_백업_' + stamp);
+    return { backup: '기록_백업_' + stamp, kept: kept.length };
   },
 
   getLog: function () {

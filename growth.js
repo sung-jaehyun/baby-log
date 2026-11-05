@@ -4,7 +4,7 @@
 
 const LONG_TYPES = new Set(['growth', 'vax', 'checkup', 'hospital', 'milestone', 'anniv', 'food']);
 const GROWTH_ONLY = new Set(['growth', 'vax', 'checkup', 'hospital', 'milestone', 'anniv']);   // 홈·하루 목록에 안 나옴
-const GR = { kind: 'w', health: 'vax', dev: 'ms', allGrowth: false, allHosp: false, month: null, vaxAll: false, open: {} };
+const GR = { sub: 'growth', kind: 'w', health: 'vax', dev: 'ms', allGrowth: false, allHosp: false, month: null, vaxAll: false, open: {} };
 
 /* ---------- 날짜 ---------- */
 function addMonths(key, n) {
@@ -134,12 +134,29 @@ function statusTag(s) {
 }
 
 /* ---------- 화면 ---------- */
+/* 홈 알림용: 지금 맞을 시기인 접종·검진 이름 (기록이 바뀌거나 날짜가 바뀔 때만 다시 계산) */
+function dueHealth() {
+  const today = dkey(Date.now()), ref = live(), key = `${today}|${set('rvType')}|${set('jeType')}|${set('birthDate')}`;
+  if (S._dueRef === ref && S._dueKey === key) return S._due;
+  const vd = doneMap('vax'), cd = doneMap('checkup');
+  const due = [];
+  vaxList().forEach((it) => { if (!it.pick) { const s = schedInfo(it, vd); if (s && s.st === 'now') due.push(`${it.n} ${it.dose}`); } });
+  CHECKS.forEach((it) => { const s = schedInfo(it, cd); if (s && s.st === 'now') due.push(it.n); });
+  S._dueRef = ref; S._dueKey = key; S._due = due;
+  return due;
+}
 function viewGrowth() {
-  if (!birthKey()) return `${header()}<div class="card placeholder">설정에서 생일을 먼저 입력해주세요.</div>`;
-  return `${header()}${anniCard()}${growthCard()}${healthCard()}${devCard()}`;
+  const a = babyAge(dkey(Date.now()));
+  const head = `<div class="ttl"><span class="t">성장</span><span class="r lbl">${esc(babyName())}${a ? ` · ${a.n}일째 · ${a.months}개월` : ''}</span></div>
+    <div class="sub">${[['growth', '키·몸무게'], ['health', '건강'], ['dev', '발달'], ['anni', '기념일']].map(([k, n]) => `<button class="${GR.sub === k ? 'on' : ''}" data-act="grSub" data-k="${k}">${n}</button>`).join('')}</div>`;
+  if (!birthKey()) return `${head}<div class="card placeholder">설정에서 생일을 먼저 입력해주세요.</div>`;
+  if (GR.sub === 'health') return head + healthCard();
+  if (GR.sub === 'dev') return head + devCard();
+  if (GR.sub === 'anni') return head + anniCard();
+  return head + growthCard();
 }
 
-/* 기념일 + 월간 리포트 */
+/* 기념일 + 지난달 리포트 요약 */
 function anniList() {
   const b = birthKey();
   const fixed = [['100일', addDays(b, 99)], ['200일', addDays(b, 199)], ['300일', addDays(b, 299)], ['돌', addMonths(b, 12)], ['두 돌', addMonths(b, 24)]]
@@ -151,16 +168,29 @@ function anniCard() {
   const today = dkey(Date.now());
   const all = anniList();
   const up = all.filter((a) => a.k >= today).slice(0, 3);
-  const pastCustom = all.filter((a) => a.r && a.k < today).reverse();
+  const past = all.filter((a) => a.k < today).reverse();
   const cell = (a) => {
     const dd = dDay(a.k);
     const inner = `<div class="lbl">${esc(a.n)}</div><b>${dd === 0 ? '오늘!' : `D-${dd}`}</b><div class="lbl">${shortDate(a.k)}</div>`;
-    return a.r ? `<button class="anni-c" data-act="grAnni" data-id="${esc(a.r.id)}">${inner}</button>` : `<div class="anni-c">${inner}</div>`;
+    return a.r ? `<button class="anni-c ${dd <= 1 ? 'hot' : ''}" data-act="grAnni" data-id="${esc(a.r.id)}">${inner}</button>` : `<div class="anni-c ${dd <= 1 ? 'hot' : ''}">${inner}</div>`;
   };
-  return `<div class="card"><div class="h">기념일<button class="chip" data-act="grAnni" style="padding:5px 10px;font-size:12px">＋ 추가</button></div>
-    <div class="anni">${up.length ? up.map(cell).join('') : '<div class="empty">다가오는 기념일이 없어요</div>'}</div>
-    ${pastCustom.length ? `<div class="sec">지난 기념일</div><div class="list">${pastCustom.map((a) => `<button class="item" data-act="grAnni" data-id="${esc(a.r.id)}"><span class="t">${shortDate(a.k)}</span><span class="what">${esc(a.n)}</span><span class="tag">${babyAge(a.k) ? `${babyAge(a.k).n}일째` : ''}</span></button>`).join('')}</div>` : ''}
-    <button class="report-btn" data-act="grReport">이번 달 리포트 보기 →</button></div>`;
+  // 지난달 리포트 요약(다 지난 달이라 숫자가 바뀌지 않음)
+  const ym = prevMonth(today.slice(0, 7)), [, pm] = ym.split('-').map(Number);
+  const showRep = birthKey().slice(0, 7) <= ym;
+  let rep = '';
+  if (showRep) {
+    const m = monthStats(ym), p = monthStats(prevMonth(ym));
+    const wd = m.w && p.w ? m.w.v - p.w.v : null;
+    rep = `<button class="rep" data-act="grReport" data-m="${ym}"><div class="t">${pm}월 리포트<span>자세히 ›</span></div>
+      <div class="g"><div>하루 수유<b>${m.feed == null ? '-' : `${Math.round(m.feed)}ml`}</b></div><div>밤잠 평균<b>${m.night == null ? '-' : minShort(m.night)}</b></div>
+      <div>몸무게<b>${m.w ? (wd != null ? `${wd >= 0 ? '+' : '−'}${Math.abs(wd).toFixed(2).replace(/0$/, '')}kg` : `${m.w.v}kg`) : '-'}</b></div></div></button>`;
+  }
+  return `<div class="card"><div class="h">다가오는 기념일<button class="chip add xs" data-act="grAnni">＋ 추가</button></div>
+    <div class="anni">${up.length ? up.map(cell).join('') : '<div class="empty" style="grid-column:1/-1">다가오는 기념일이 없어요</div>'}</div></div>
+    ${rep || `<button class="rep" data-act="grReport"><div class="t">이번 달 리포트<span>자세히 ›</span></div></button>`}
+    <div class="card list"><div class="h">지난 기념일</div>${past.length ? past.map((a) => `<${a.r ? `button class="item" data-act="grAnni" data-id="${esc(a.r.id)}"` : 'div class="item"'}>
+      <span class="t">${shortDate(a.k)}</span><span class="what">${esc(a.n)}</span><span class="tag">${babyAge(a.k) ? `${babyAge(a.k).n}일째` : ''}</span></${a.r ? 'button' : 'div'}>`).join('')
+      : '<div class="empty">첫 외출처럼 기억하고 싶은 날을 ＋ 추가로 남겨보세요</div>'}</div>`;
 }
 
 /* 키·몸무게 */
@@ -177,17 +207,17 @@ function growthCard() {
       <div class="lbl">${pc != null ? `백분위 ${pctTxt(pc)}` : ''}${diff != null ? `${pc != null ? ' · ' : ''}${diff >= 0 ? '+' : ''}${kind === 'w' ? diff.toFixed(2) : diff.toFixed(1)}${unit}` : ''}</div></div>`;
   };
   const rows = M.all.slice(0, GR.allGrowth ? 999 : 5).map((r) => `<button class="item" data-act="grGrowth" data-id="${esc(r.id)}">
-      <span class="t">${shortDate(dk(r))}</span><span class="what">${[Number(r.value) > 0 ? `${Number(r.value)}kg` : '', Number(r.d1) > 0 ? `${Number(r.d1)}cm` : ''].filter(Boolean).join(' · ')}${r.d2 ? `<small>${esc(r.d2)}</small>` : ''}</span><span class="tag">${esc(r.by)}</span></button>`).join('');
-  return `<div class="card"><div class="h">키·몸무게<button class="chip" data-act="grGrowth" style="padding:5px 10px;font-size:12px">＋ 기록</button></div>
-    <div class="grid2" style="margin-bottom:8px">${stat(w, 'kg', 'w', '몸무게')}${stat(h, 'cm', 'h', '키')}</div>
+      <span class="t">${shortDate(dk(r))}</span><span class="what">${[Number(r.value) > 0 ? `${Number(r.value)}kg` : '', Number(r.d1) > 0 ? `${Number(r.d1)}cm` : ''].filter(Boolean).join(' · ')}${r.d2 ? `<small>${esc(r.d2)}</small>` : ''}</span></button>`).join('');
+  return `<div class="card"><div class="h">키·몸무게<button class="chip add xs" data-act="grGrowth">＋ 기록</button></div>
+    <div class="gs">${stat(w, 'kg', 'w', '몸무게')}${stat(h, 'cm', 'h', '키')}</div>
     <div class="seg"><button class="seg-b ${GR.kind === 'w' ? 'on' : ''}" data-act="grKind" data-k="w">몸무게</button><button class="seg-b ${GR.kind === 'h' ? 'on' : ''}" data-act="grKind" data-k="h">키</button></div>
     ${growthSvg(GR.kind === 'w' ? w : h, GR.kind)}
-    <div class="lbl" style="text-align:center;margin:2px 0 8px">옅은 선: 같은 월령 남아 3·15·50·85·97 백분위 (WHO 기준, 질병관리청 성장도표 3세 미만)</div>
-    <div class="list">${rows || '<div class="empty">출생 때나 검진 때 잰 값을 ＋ 기록으로 넣어보세요</div>'}
-    ${M.all.length > 5 ? `<button class="more" data-act="grMore" data-k="allGrowth">${GR.allGrowth ? '접기' : `전체 보기 (${M.all.length})`}</button>` : ''}</div></div>`;
+    <div class="sum" style="font-size:11px">옅은 선: 같은 월령 남아 3·15·50·85·97 백분위 (WHO 기준, 질병관리청 성장도표 3세 미만)</div></div>
+  <div class="card list">${rows || '<div class="empty">출생 때나 검진 때 잰 값을 ＋ 기록으로 넣어보세요</div>'}
+    ${M.all.length > 5 ? `<button class="more" data-act="grMore" data-k="allGrowth">${GR.allGrowth ? '접기 ▴' : `전체 보기 (${M.all.length}) ▾`}</button>` : ''}</div>`;
 }
 function growthSvg(pts, kind) {
-  const W = 320, H = 200, L = 32, R = 22, T = 8, B = 18, iw = W - L - R, ih = H - T - B;
+  const W = 320, H = 220, L = 30, R = 22, T = 8, B = 18, iw = W - L - R, ih = H - T - B;
   const ages = pts.map((p) => ageMonths(p.key)).filter((a) => a != null);
   const xmax = Math.min(36, Math.max(6, Math.ceil((Math.max(ageMonths(dkey(Date.now())) || 0, ...ages) + 2) / 3) * 3));
   const Z = [[-1.881, '3'], [-1.036, '15'], [0, '50'], [1.036, '85'], [1.881, '97']];
@@ -199,17 +229,19 @@ function growthSvg(pts, kind) {
   const x = (a) => L + (a / xmax) * iw, y = (v) => T + ih - ((v - lo) / (hi - lo)) * ih;
   let g = '';
   const ystep = kind === 'w' ? (hi - lo > 10 ? 2 : 1) : 5;
-  for (let v = lo; v <= hi + 1e-9; v += ystep) g += `<line x1="${L}" x2="${W - R}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}" stroke="#2A2846" stroke-width="0.6"/><text x="${L - 4}" y="${(y(v) + 3).toFixed(1)}" text-anchor="end" font-size="9" fill="#9E99C4">${v}</text>`;
+  for (let v = lo; v <= hi + 1e-9; v += ystep) g += `<line x1="${L}" x2="${W - R}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}" stroke="var(--grid)" stroke-width="1"/><text x="${L - 4}" y="${(y(v) + 3).toFixed(1)}" text-anchor="end" font-size="9" fill="var(--muted)">${v}</text>`;
   const xs = xmax <= 12 ? 1 : 3;
-  for (let a = 0; a <= xmax; a += xs) g += `<text x="${x(a).toFixed(1)}" y="${H - 4}" text-anchor="middle" font-size="9" fill="#9E99C4">${a}</text>`;
-  g += `<text x="${W - R + 2}" y="${H - 4}" font-size="8" fill="#9E99C4">개월</text>`;
+  for (let a = 0; a <= xmax; a += xs) g += `<text x="${x(a).toFixed(1)}" y="${H - 4}" text-anchor="middle" font-size="9" fill="var(--muted)">${a}</text>`;
+  g += `<text x="${W - R + 2}" y="${H - 4}" font-size="8" fill="var(--muted)">개월</text>`;
+  const band = (c) => c.p.map(([a, v]) => `${x(a).toFixed(1)},${y(v).toFixed(1)}`);
+  g += `<path d="M${band(curves[0]).join(' L')} L${band(curves[4]).reverse().join(' L')}Z" fill="var(--soft)"/>`;
   curves.forEach((c) => {
-    g += `<polyline points="${c.p.map(([a, v]) => `${x(a).toFixed(1)},${y(v).toFixed(1)}`).join(' ')}" fill="none" stroke="${c.z === 0 ? '#7F77DD' : '#3E3A68'}" stroke-width="${c.z === 0 ? 1.4 : 1}"/>`;
-    const lp = c.p[c.p.length - 1]; g += `<text x="${(x(lp[0]) + 2).toFixed(1)}" y="${(y(lp[1]) + 3).toFixed(1)}" font-size="8" fill="#9E99C4">${c.n}</text>`;
+    g += `<polyline points="${band(c).join(' ')}" fill="none" stroke="${c.z === 0 ? 'var(--accent2)' : 'var(--soft2)'}" stroke-width="${c.z === 0 ? 1.6 : 1.1}" ${c.z === 0 ? '' : 'stroke-dasharray="3 2"'}/>`;
+    const lp = c.p[c.p.length - 1]; g += `<text x="${(x(lp[0]) + 2).toFixed(1)}" y="${(y(lp[1]) + 3).toFixed(1)}" font-size="8" fill="var(--muted)">${c.n}</text>`;
   });
   const ps = pts.map((p) => [ageMonths(p.key), p.v]).filter(([a]) => a != null && a <= xmax);
-  if (ps.length > 1) g += `<polyline points="${ps.map(([a, v]) => `${x(a).toFixed(1)},${y(v).toFixed(1)}`).join(' ')}" fill="none" stroke="#FAC775" stroke-width="2"/>`;
-  ps.forEach(([a, v]) => { g += `<circle cx="${x(a).toFixed(1)}" cy="${y(v).toFixed(1)}" r="3.5" fill="#FAC775"/>`; });
+  if (ps.length > 1) g += `<polyline points="${ps.map(([a, v]) => `${x(a).toFixed(1)},${y(v).toFixed(1)}`).join(' ')}" fill="none" stroke="#F2A0B8" stroke-width="2.4" stroke-linejoin="round"/>`;
+  ps.forEach(([a, v], i) => { g += `<circle cx="${x(a).toFixed(1)}" cy="${y(v).toFixed(1)}" r="${i === ps.length - 1 ? 4.5 : 3.2}" fill="var(--card)" stroke="#E57BA0" stroke-width="2"/>`; });
   return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="성장곡선">${g}</svg>`;
 }
 
@@ -221,19 +253,18 @@ function healthCard() {
   const open = vax.concat(chk).filter((x) => x.s && x.s.st !== 'done');
   const nowItems = open.filter((x) => x.s.st === 'now').sort((a, b) => ((a.s.end || '9') < (b.s.end || '9') ? -1 : 1));
   const next = open.filter((x) => x.s.st === 'wait' && x.s.start).sort((a, b) => (a.s.start < b.s.start ? -1 : 1));
-  const upcoming = nowItems.concat(next).slice(0, 2);
+  const upcoming = nowItems.concat(next).slice(0, 3);
   const lateN = open.filter((x) => x.s.st === 'late').length;
   const upHtml = upcoming.map((x) => `<button class="up-row" data-act="${x.type === 'vax' ? 'grVax' : 'grCheck'}" data-k="${x.it.k}">
-      <span>${esc(x.it.n)} ${esc(x.it.dose)}</span>${statusTag(x.s)}</button>`).join('');
+      <span>${esc(x.it.n)} ${esc(x.it.dose)}<small>${esc(x.s.win)}</small></span>${statusTag(x.s)}</button>`).join('');
   const seg = [['vax', '예방접종'], ['check', '검진'], ['hosp', '병원']].map(([k, n]) => `<button class="seg-b ${GR.health === k ? 'on' : ''}" data-act="grHealth" data-k="${k}">${n}</button>`).join('');
   let body = '';
   if (GR.health === 'vax') body = vaxBody(vax);
   else if (GR.health === 'check') body = itemRows(chk, 'grCheck');
   else body = hospBody();
-  return `<div class="card"><div class="h">건강</div>
-    ${upHtml ? `<div class="sec" style="margin-top:0">다가오는 일정</div><div class="up">${upHtml}</div>` : ''}
-    ${lateN ? `<div class="lbl" style="margin:6px 0 2px">시기 지난 미완료 ${lateN}건 · 이미 했다면 눌러서 체크해주세요</div>` : ''}
-    <div class="seg" style="margin-top:10px">${seg}</div>${body}</div>`;
+  return `${upHtml || lateN ? `<div class="card"><div class="h">다가오는 일정</div>${upHtml ? `<div class="up">${upHtml}</div>` : ''}
+    ${lateN ? `<div class="lbl" style="margin-top:6px">시기 지난 미완료 ${lateN}건 · 이미 했다면 눌러서 체크해주세요</div>` : ''}</div>` : ''}
+    <div class="card"><div class="seg">${seg}</div>${body}</div>`;
 }
 function itemRows(list, act) {
   return `<div class="list">${list.map((x) => `<button class="item" data-act="${act}" data-k="${x.it.k}">
@@ -248,13 +279,13 @@ function vaxBody(vax) {
   });
   const keys = new Set(vax.map((x) => x.it.k)), names = VAX_NAMES();
   const custom = byType('vax').filter((r) => r.d3 === '선택' || !keys.has(r.d1)).sort((a, b) => b.start - a.start);
-  return `<div class="grid2" style="margin:2px 0 6px">
+  return `<div class="grid2" style="margin:2px 0 8px">
       <div class="field" style="margin:0"><label>로타바이러스</label><select data-set="rvType"><option value="">선택 안 함</option>${['로타텍', '로타릭스'].map((v) => `<option ${set('rvType') === v ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
       <div class="field" style="margin:0"><label>일본뇌염</label><select data-set="jeType"><option value="">선택 안 함</option>${['사백신', '생백신'].map((v) => `<option ${set('jeType') === v ? 'selected' : ''}>${v}</option>`).join('')}</select></div></div>
     ${vaxGroups(groups)}
     <div class="sec">선택 접종 <span class="tag">선택</span></div>
     <div class="list">${custom.map((r) => `<button class="item" data-act="grVaxCustom" data-id="${esc(r.id)}"><span class="what">${esc(names.get(r.d1) || r.d1)}${r.d3 === '선택' ? '' : ' <span class="lbl">(종류 변경 전 기록)</span>'}${r.d2 ? `<small>${esc(r.d2)}</small>` : ''}</span><span class="tag ok-tag">✓ ${shortDate(dk(r))}</span></button>`).join('') || '<div class="empty">수막구균 등 선택 접종은 ＋로 기록해요</div>'}</div>
-    <button class="chip" data-act="grVaxCustom" style="margin-top:8px">＋ 선택 접종 기록</button>
+    <button class="chip xs" data-act="grVaxCustom" style="margin-top:6px">＋ 선택 접종 기록</button>
     <div class="lbl" style="margin-top:8px">일정: 질병관리청 표준예방접종일정 기준. 실제 접종은 소아과 안내를 따르세요.</div>`;
 }
 /* 다 맞은 시기는 한 줄로 접고, 다음 시기까지만 보여준다(나머지는 '이후 일정 보기') */
@@ -269,28 +300,36 @@ function vaxGroups(groups) {
     return `<div class="sec">${esc(g.g)}${allDone ? ` <button class="lbl" data-act="grStage" data-g="${esc(g.g)}">접기</button>` : ''}</div>${itemRows(g.l, 'grVax')}`;
   }).join('');
   const rest = groups.length - shown.length;
-  return html + (rest > 0 || GR.vaxAll ? `<button class="more" data-act="grMore" data-k="vaxAll">${GR.vaxAll ? '이후 일정 접기' : `이후 일정 보기 (${groups.slice(cut + 1).reduce((n, g) => n + g.l.length, 0)}건)`}</button>` : '');
+  return html + (rest > 0 || GR.vaxAll ? `<button class="more" data-act="grMore" data-k="vaxAll">${GR.vaxAll ? '이후 일정 접기 ▴' : `이후 일정 보기 (${groups.slice(cut + 1).reduce((n, g) => n + g.l.length, 0)}건) ▾`}</button>` : '');
 }
 function hospBody() {
   const h = byType('hospital').sort((a, b) => b.start - a.start);
   return `<div class="list">${h.slice(0, GR.allHosp ? 999 : 6).map((r) => `<button class="item" data-act="grHosp" data-id="${esc(r.id)}"><span class="t">${shortDate(dk(r))}</span>
       <span class="what">${esc(r.d1 || '병원')}${r.d2 ? ` <span class="lbl">${esc(r.d2)}</span>` : ''}${r.memo ? `<small>${esc(r.memo)}</small>` : ''}</span></button>`).join('') || '<div class="empty">병원 다녀온 기록이 없어요</div>'}
-    ${h.length > 6 ? `<button class="more" data-act="grMore" data-k="allHosp">${GR.allHosp ? '접기' : `전체 보기 (${h.length})`}</button>` : ''}</div>
-    <button class="chip" data-act="grHosp" style="margin-top:8px">＋ 병원 기록</button>`;
+    ${h.length > 6 ? `<button class="more" data-act="grMore" data-k="allHosp">${GR.allHosp ? '접기 ▴' : `전체 보기 (${h.length}) ▾`}</button>` : ''}</div>
+    <button class="chip xs" data-act="grHosp" style="margin-top:6px">＋ 병원 기록</button>`;
 }
 
 /* 발달·이유식 */
 const MILESTONES = ['목 가누기', '소리 내어 웃기', '옹알이', '뒤집기', '되집기', '배밀이', '혼자 앉기', '기기', '잡고 서기', '첫 이', '첫 걸음'];
+/* 보통 해내는 시기(개월, 대략). '다음에 기대돼요'에 지금 월령 무렵 것만 보여주는 데 씀 */
+const MS_AGE = { '목 가누기': [2, 4], '소리 내어 웃기': [2, 4], '옹알이': [2, 4], '뒤집기': [4, 6], '되집기': [5, 7], '배밀이': [6, 8], '혼자 앉기': [6, 9], '기기': [7, 10], '잡고 서기': [8, 12], '첫 이': [6, 10], '첫 걸음': [11, 15] };
 function devCard() {
   const seg = [['ms', '발달'], ['food', '이유식']].map(([k, n]) => `<button class="seg-b ${GR.dev === k ? 'on' : ''}" data-act="grDev" data-k="${k}">${n}</button>`).join('');
-  let body;
-  if (GR.dev === 'ms') {
-    const ms = byType('milestone').sort((a, b) => b.start - a.start);
-    body = `<div class="list">${ms.map((r) => `<button class="item" data-act="grMs" data-id="${esc(r.id)}"><span class="t">${shortDate(dk(r))}</span>
+  if (GR.dev !== 'ms') return `<div class="card"><div class="seg">${seg}</div>${foodTable()}</div>`;
+  const ms = byType('milestone').sort((a, b) => b.start - a.start);
+  const done = new Set(ms.map((r) => r.d1));
+  const age = ageMonths(dkey(Date.now())) || 0;
+  const next = MILESTONES.filter((m) => !done.has(m) && MS_AGE[m][0] <= age + 3).slice(0, 5);
+  const rng = next.length ? [Math.min(...next.map((m) => MS_AGE[m][0])), Math.max(...next.map((m) => MS_AGE[m][1]))] : null;
+  return `<div class="card"><div class="seg">${seg}</div>
+    <div class="sec" style="margin-top:2px">처음 해낸 날</div>
+    <div class="list">${ms.map((r) => `<button class="item" data-act="grMs" data-id="${esc(r.id)}"><span class="t">${shortDate(dk(r))}</span>
         <span class="what">${esc(r.d1)}${r.memo ? `<small>${esc(r.memo)}</small>` : ''}</span><span class="tag">${babyAge(dk(r)) ? `${babyAge(dk(r)).n}일째` : ''}</span></button>`).join('') || '<div class="empty">처음 해낸 날을 기록해보세요</div>'}</div>
-      <button class="chip" data-act="grMs" style="margin-top:8px">＋ 발달 기록</button>`;
-  } else body = foodTable();
-  return `<div class="card"><div class="h">발달·이유식</div><div class="seg">${seg}</div>${body}</div>`;
+    <button class="more" data-act="grMs" style="background:var(--soft);border-radius:12px;padding:9px;margin-top:8px">＋ 처음 해낸 날 기록</button></div>
+  ${next.length ? `<div class="card"><div class="h">다음에 기대돼요<span>보통 ${rng[0]}~${rng[1]}개월</span></div>
+    <div class="chips">${next.map((m) => `<button class="chip xs" data-act="grMsQuick" data-m="${esc(m)}">${esc(m)}</button>`).join('')}</div>
+    <div class="note2" style="margin:8px 0 0">누르면 오늘 날짜로 바로 기록돼요 · 날짜는 목록에서 고칠 수 있어요</div></div>` : ''}`;
 }
 function foodTable() {
   const m = new Map();
@@ -547,6 +586,13 @@ function loadMonth(ym) {
 
 /* ---------- 동작 ---------- */
 const GROWTH_ACTIONS = {
+  grSub(el) { GR.sub = el.dataset.k; render(); window.scrollTo(0, 0); },
+  grMsQuick(el) {
+    const m = el.dataset.m;
+    if (byType('milestone').some((r) => r.d1 === m)) return;   // 두 번 눌러도 한 번만
+    addRec({ type: 'milestone', start: at(dkey(Date.now()), '12:00'), d1: m });
+    note(`${m} 기록했어요 · 날짜는 목록에서 고칠 수 있어요`);
+  },
   grKind(el) { GR.kind = el.dataset.k; render(); },
   grHealth(el) { GR.health = el.dataset.k; render(); },
   grDev(el) { GR.dev = el.dataset.k; render(); },
@@ -559,5 +605,5 @@ const GROWTH_ACTIONS = {
   grHosp(el) { hospSheet(el.dataset.id); },
   grMs(el) { msSheet(el.dataset.id); },
   grAnni(el) { anniSheet(el.dataset.id); },
-  grReport() { const ym = dkey(Date.now()).slice(0, 7); reportSheet(ym); loadMonth(ym); },
+  grReport(el) { const ym = (el && el.dataset.m) || dkey(Date.now()).slice(0, 7); reportSheet(ym); loadMonth(ym); },
 };

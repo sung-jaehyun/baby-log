@@ -53,7 +53,7 @@ const DEMO = (() => {
     if (!u) { const e = new Error('PIN이 맞지 않아요.'); e.server = true; e.code = 'pin'; throw e; }
     const now = Date.now();
     d.rev = d.rev || 1;
-    const pub = () => d.users.map((x) => ({ name: x.name, active: x.active }));
+    const pub = () => d.users.map((x, i) => ({ name: x.name, active: x.active, admin: i === 0 }));
     let out = {};
     switch (action) {
       case 'login': out = { weakPin: ['1111', '2222', '3333'].includes(String(pin)) && false }; break;
@@ -62,6 +62,7 @@ const DEMO = (() => {
       case 'range': out = { recs: d.recs.filter((r) => r.start >= data.from && r.start < data.to) }; break;
       case 'batch': {
         out = { results: data.ops.map((op) => {
+          if (d.resetAt && !(Number(op.at) > d.resetAt)) return { ok: false, code: 'reset' };
           if (op.op === 'add') {
             const ex = d.recs.find((x) => x.id === op.rec.id); if (ex) return { ok: true, rec: ex };
             const r = Object.assign({}, op.rec, { created: now, updated: now, deleted: false }); d.recs.push(r); return { ok: true, rec: r };
@@ -80,11 +81,20 @@ const DEMO = (() => {
       case 'saveMemo': d.memos[data.date] = { text: data.text, by: u.name }; out = { memos: d.memos }; break;
       case 'saveUsers': d.users = data.users.map((x) => ({ name: x.name, pin: x.pin || (d.users.find((y) => y.name === (x.oldName || x.name)) || {}).pin || '', active: x.active })); out = { users: pub() }; break;
       case 'getLog': out = { log: [] }; break;
+      case 'resetRecords': {
+        if (u.name !== d.users[0].name) { const e = new Error('기록 지우기는 관리자(사용자 목록 맨 위)만 할 수 있어요.'); e.server = true; e.code = 'error'; throw e; }
+        if (data.confirm !== '지우기' || String(data.pin) !== String(pin)) { const e = new Error('확인 글자나 PIN이 맞지 않아요.'); e.server = true; e.code = 'error'; throw e; }
+        const G = ['growth', 'vax', 'checkup', 'hospital', 'milestone', 'anniv'];
+        d.backup = { recs: d.recs, memos: d.memos };
+        d.recs = data.scope === 'all' ? [] : d.recs.filter((r) => G.includes(r.type));
+        d.memos = {}; d.resetAt = now; d.rev++;
+        out = { backup: '기록_백업_demo', kept: d.recs.length }; break;
+      }
       default: { const e = new Error('알 수 없는 요청'); e.server = true; throw e; }
     }
     if (['setSettings', 'savePlan', 'applyPlan', 'saveUsers'].includes(action)) d.rev++;
     save(d);
-    return { ok: true, api: 3, user: u.name, now, rev: d.rev, data: JSON.parse(JSON.stringify(out)) };
+    return { ok: true, api: 4, user: u.name, now, rev: d.rev, reset: d.resetAt || 0, data: JSON.parse(JSON.stringify(out)) };
   }
   return { call };
 })();
