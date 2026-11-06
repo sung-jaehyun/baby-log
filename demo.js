@@ -95,7 +95,7 @@ const DEMO = (() => {
       case 'resetRecords': {
         if (u.name !== d.users[0].name) { const e = new Error('기록 지우기는 관리자(사용자 목록 맨 위)만 할 수 있어요.'); e.server = true; e.code = 'error'; throw e; }
         if (data.confirm !== '지우기' || String(data.pin) !== String(pin)) { const e = new Error('확인 글자나 PIN이 맞지 않아요.'); e.server = true; e.code = 'error'; throw e; }
-        const G = ['growth', 'vax', 'checkup', 'hospital', 'milestone', 'anniv'];
+        const G = ['growth', 'vax', 'checkup', 'hospital', 'milestone', 'anniv', 'event'];
         d.backup = { recs: d.recs, memos: d.memos };
         d.recs = data.scope === 'all' ? [] : d.recs.filter((r) => G.includes(r.type));
         d.memos = {}; d.resetAt = now; d.resetScope = data.scope === 'all' ? 'all' : 'daily'; d.rev++;
@@ -105,7 +105,7 @@ const DEMO = (() => {
     }
     if (['setSettings', 'savePlan', 'applyPlan', 'saveUsers'].includes(action)) d.rev++;
     save(d);
-    return { ok: true, api: 5, user: u.name, now, rev: d.rev, reset: d.resetAt || 0, resetScope: d.resetScope || '', data: JSON.parse(JSON.stringify(out)) };
+    return { ok: true, api: 6, user: u.name, now, rev: d.rev, reset: d.resetAt || 0, resetScope: d.resetScope || '', data: JSON.parse(JSON.stringify(out)) };
   }
   return { call };
 })();

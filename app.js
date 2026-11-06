@@ -203,7 +203,7 @@ async function sync(full) {
     if (!S.auth) return;
     if ((S.wipeN || 0) !== wipe0) return;   // 응답 도중 기록 지우기를 알게 됨: 이 응답은 버리고 새로 전체를 받음
     lastSync = Date.now();
-    if (j.api && j.api < 5 && j.api >= 3 && S.auth.url !== 'demo' && !S.apiWarned) { S.apiWarned = true; note('서버 코드를 새 버전으로 배포해주세요 (PIN 보안·메모 보호)'); }
+    if (j.api && j.api < 6 && j.api >= 3 && S.auth.url !== 'demo' && !S.apiWarned) { S.apiWarned = true; note('서버 코드를 새 버전으로 배포해주세요 (일정·PIN 보안·메모 보호)'); }
     if ((!j.api || j.api < 3) && S.auth.url !== 'demo' && !S.apiWarned) { S.apiWarned = true; note('서버 코드를 새 버전으로 배포해주세요 (성장 기록 보관)'); }
     if (!isFull && j.data.same) { S.rev = j.rev; return; }
     if (isFull) {
@@ -525,7 +525,7 @@ function render(force) {
   clearTimeout(bgTimer);
   const root = $('#app');
   if (!S.auth) { root.innerHTML = viewLogin(); $('#tabs').innerHTML = ''; warmServer(); return; }
-  const v = { home: viewHome, day: viewDay, pattern: viewPattern, growth: viewGrowth, settings: viewSettings }[S.tab] || viewHome;
+  const v = { home: viewHome, day: viewDay, cal: viewCal, pattern: viewPattern, growth: viewGrowth, settings: viewSettings }[S.tab] || viewHome;
   const same = S.tab === S._lastTab, y = window.scrollY;
   root.innerHTML = v();
   if (S.tab === 'home') fitClock();
@@ -535,7 +535,7 @@ function render(force) {
   backSync();
 }
 function renderTabs() {
-  const t = [['home', '홈'], ['day', '하루'], ['pattern', '패턴'], ['growth', '성장']];
+  const t = [['home', '홈'], ['day', '하루'], ['cal', '일정'], ['pattern', '패턴'], ['growth', '성장']];
   const html = `<div class="in">${t.map(([k, n]) => `<button data-act="tab" data-tab="${k}" class="${S.tab === k ? 'on' : ''}">${ART.icons[k === 'day' ? 'day' : k]}${n}</button>`).join('')}</div>`;
   const el = $('#tabs');
   if (el._html !== html) { el.innerHTML = html; el._html = html; }
@@ -827,6 +827,7 @@ function homeAlerts() {
     const due = dueHealth();
     if (due.length) out.push(['💉', `${due[0]} ${due.length > 1 ? `외 ${due.length - 1}건 ` : ''}맞을 시기예요`, '이미 했다면 성장 탭 → 건강에서 체크해주세요', 'health']);
   }
+  calSoon().slice(0, 2).forEach((x) => out.push(['📅', `${x.when}${x.time ? ` ${x.time}` : ''} ${x.t}`, '일정 탭에서 보기', `cal:${x.k}`]));
   const m = S.memos[dkey(Date.now())];
   if (m && m.text) out.push(['📝', m.text, '오늘 메모 · 하루 탭에서 보기', 'memo']);
   return out.map(([e, b, s, k]) => `<button class="alert" data-act="alertGo" data-k="${k}"><span class="e">${e}</span><span style="min-width:0"><b>${esc(b)}</b><small>${esc(s)}</small></span></button>`).join('');
@@ -1236,7 +1237,7 @@ function viewSettings() {
   <div class="grp">${isAdmin() ? row('가족 · PIN 관리', `${S.users.filter((u) => u.active).length}명`, 'setUsers') : `<div class="sb"><span class="k">가족<small>PIN 관리는 관리자(${esc((S.users[0] || {}).name || '')})만</small></span><span class="v">${S.users.filter((u) => u.active).length}명</span></div>`}
     ${row('내 PIN 바꾸기', '', 'changePin')}
     ${S.queue.length ? `<div class="sb"><span class="k">올라가기 기다리는 기록</span><span class="v">${S.queue.length}건</span></div>` : ''}
-    <button class="sb" data-act="resync"><span class="k">서버<small>${S.auth.url === 'demo' ? '데모 모드' : '구글 시트 연결됨'} · 버전 ${!S.api ? '확인 중' : S.api >= 5 ? `${S.api} 최신` : `${S.api} (새 버전 배포 필요)`}</small></span><span class="v" style="color:var(--ink)">새로고침</span></button>
+    <button class="sb" data-act="resync"><span class="k">서버<small>${S.auth.url === 'demo' ? '데모 모드' : '구글 시트 연결됨'} · 버전 ${!S.api ? '확인 중' : S.api >= 6 ? `${S.api} 최신` : `${S.api} (새 버전 배포 필요)`}</small></span><span class="v" style="color:var(--ink)">새로고침</span></button>
     ${row('변경 기록', '', 'setLog')}
     <button class="sb" data-act="logout"><span class="k danger">로그아웃</span></button></div>
   ${isAdmin() ? `<div class="gh">관리자</div><div class="grp"><button class="sb" data-act="setReset"><span class="k danger">기록 지우기<small>연습 기록 정리용 · 지우기 전에 시트에 백업해요</small></span><span class="ar">›</span></button></div>` : ''}
@@ -1363,7 +1364,7 @@ function resetSheet() {
     <div class="warnbox">지운 기록은 앱에서 사라지고 모든 가족 휴대폰에서도 지워져요.<br>지우기 전에 구글 시트에 '기록_백업_날짜' 탭으로 복사해 둬요.</div>
     <div class="sec" style="margin-top:0">무엇을 지울까요?</div>
     <div class="chips" id="sc" style="flex-direction:column;align-items:stretch">
-      <button class="chip" data-s="daily" style="text-align:left;white-space:normal">① 매일 기록만<br><span class="lbl">수유·잠·기저귀·목욕·체온·약·산책·메모·이유식·하루 메모 (키·몸무게·접종·검진·병원·발달·기념일은 남김)</span></button>
+      <button class="chip" data-s="daily" style="text-align:left;white-space:normal">① 매일 기록만<br><span class="lbl">수유·잠·기저귀·목욕·체온·약·산책·메모·이유식·하루 메모 (키·몸무게·접종·검진·병원·발달·기념일·일정은 남김)</span></button>
       <button class="chip" data-s="all" style="text-align:left;white-space:normal">② 전부<br><span class="lbl">위 기록 + 성장 탭 기록까지 모두</span></button></div>
     <div class="lbl" style="margin:10px 0">일정표·분유 양·체온 기준 같은 설정과 가족·PIN은 그대로예요.</div>
     <div class="field"><label>내 PIN 다시 입력</label><input id="rp" type="password" inputmode="numeric" maxlength="4"></div>
@@ -1623,14 +1624,14 @@ const ACTIONS = {
     S.tab = el.dataset.tab;
     if (S.tab === 'day') { S.day = dkey(Date.now()); S.dayAll = false; S.planAll = false; }
     // 하단 탭을 누르면 패턴·성장은 첫 화면부터
-    if (el.closest('#tabs')) { if (S.tab === 'pattern') S.pat.sub = 'week'; if (S.tab === 'growth') GR.sub = 'growth'; }
+    if (el.closest('#tabs')) { if (S.tab === 'pattern') S.pat.sub = 'week'; if (S.tab === 'growth') GR.sub = 'growth'; if (S.tab === 'cal') { CAL.m = null; CAL.sel = null; } }
     closeToast(); render(); window.scrollTo(0, 0);
   },
   patSub(el) { S.pat.sub = el.dataset.k; render(); window.scrollTo(0, 0); },
   dayMore(el) { S[el.dataset.k] = !S[el.dataset.k]; render(); },
   alertGo(el) {
     const k = el.dataset.k;
-    if (k === 'memo') { S.tab = 'day'; S.day = dkey(Date.now()); } else { S.tab = 'growth'; GR.sub = k === 'anni' ? 'anni' : 'health'; if (k === 'health') GR.health = 'vax'; }
+    if (k === 'memo') { S.tab = 'day'; S.day = dkey(Date.now()); } else if (k.startsWith('cal:')) { S.tab = 'cal'; CAL.sel = k.slice(4); CAL.m = CAL.sel.slice(0, 7); } else { S.tab = 'growth'; GR.sub = k === 'anni' ? 'anni' : 'health'; if (k === 'health') GR.health = 'vax'; }
     closeToast(); render(); window.scrollTo(0, 0);
   },
   goPlan() { const c = curApply(); planSheet(c ? c.name : (Object.keys(S.plans)[0] || '')); },
@@ -1744,6 +1745,7 @@ const ACTIONS = {
     if (await ask(`이 기기에서 로그아웃할까요?${n ? `<br><span class="lbl">아직 올라가지 않은 기록 ${n}건은 다시 로그인하면 이어서 올라가요.</span>` : ''}`, '로그아웃')) logout();
   },
 };
+Object.assign(ACTIONS, CAL_ACTIONS);   // 일정 탭(cal.js)
 Object.assign(ACTIONS, GROWTH_ACTIONS, SET_SHEETS);
 ACTIONS.shareDay = () => shareDay(S.day);
 

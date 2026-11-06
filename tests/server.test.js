@@ -95,6 +95,10 @@ const fut = post({ pin: '1111', action: 'batch', data: { now, ops: [
   { op: 'add', id: 'f1', rec: { id: 'f1', type: 'anniv', start: now + 100 * 864e5, d1: '백일', created: now }, at: now },
   { op: 'add', id: 'f2', rec: { id: 'f2', type: 'feed', start: now + 3 * 864e5, value: 100, created: now }, at: now }] } }).data.results;
 check('기념일은 미래 날짜도 저장, 분유는 미래 3일 거절', fut[0].ok && !fut[1].ok, fut);
+const ev = post({ pin: '1111', action: 'batch', data: { now, ops: [{ op: 'add', id: 'e1', rec: { id: 'e1', type: 'event', start: now + 30 * 864e5, d1: '검진', d2: '검진', created: now }, at: now }] } }).data.results;
+check('일정(event) 미래 날짜 저장', ev[0].ok, ev);
+post({ pin: '1111', action: 'batch', data: { now, ops: [{ op: 'add', id: 'e0', rec: { id: 'e0', type: 'event', start: now - 100 * 864e5, d1: '지난 일정', created: now }, at: now }] } });
+check('일정은 오래돼도 항상 앱에 보냄', post({ pin: '1111', action: 'load' }).data.recs.some((r) => r.id === 'e1') && post({ pin: '1111', action: 'load' }).data.recs.some((r) => r.id === 'e0'));
 // 메모 비우기 충돌
 post({ pin: '2222', action: 'batch', data: { now, ops: [{ op: 'memo', id: '2026-11-07', text: '예방접종', base: '', at: now }] } });
 post({ pin: '1111', action: 'batch', data: { now, ops: [{ op: 'memo', id: '2026-11-07', text: '', base: '', at: now }] } });

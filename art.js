@@ -64,6 +64,7 @@ const ART = (() => {
     gear: ic(`<circle cx="24" cy="24" r="7" fill="none" stroke="currentColor" stroke-width="3"/><g stroke="currentColor" stroke-width="4" stroke-linecap="round">
       <line x1="24" y1="6" x2="24" y2="11"/><line x1="24" y1="37" x2="24" y2="42"/><line x1="6" y1="24" x2="11" y2="24"/><line x1="37" y1="24" x2="42" y2="24"/>
       <line x1="11" y1="11" x2="15" y2="15"/><line x1="33" y1="33" x2="37" y2="37"/><line x1="11" y1="37" x2="15" y2="33"/><line x1="33" y1="15" x2="37" y2="11"/></g>`),
+    cal: ic(`<rect x="8" y="11" width="32" height="29" rx="5" fill="none" stroke="currentColor" stroke-width="3"/><path d="M8 20 H40 M17 7 V14 M31 7 V14" stroke="currentColor" stroke-width="3" stroke-linecap="round"/><rect x="15" y="26" width="6" height="5" rx="1.5" fill="currentColor"/>`),
     home: ic(`<path d="M8 22 L24 9 L40 22 V40 H8z" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round"/><rect x="20" y="28" width="8" height="12" fill="currentColor"/>`),
     day: ic(`<circle cx="24" cy="24" r="16" fill="none" stroke="currentColor" stroke-width="3"/><path d="M24 14 V24 L31 29" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"/>`),
     pattern: ic(`<g fill="currentColor"><rect x="8" y="20" width="6" height="20" rx="2"/><rect x="17" y="12" width="6" height="28" rx="2"/>

@@ -4,11 +4,11 @@
  * 업그레이드: 붙여넣고 저장 → 배포 관리 → ✏️ → 새 버전 → 배포만(setup 실행하지 않음).
  */
 const TZ = 'Asia/Seoul';
-const API_VERSION = 5;
+const API_VERSION = 6;
 /** 성장 탭 기록과 이유식은 오래돼도 항상 앱에 보낸다 */
-const LONG_TYPES = { growth: 1, vax: 1, checkup: 1, hospital: 1, milestone: 1, anniv: 1, food: 1 };
+const LONG_TYPES = { growth: 1, vax: 1, checkup: 1, hospital: 1, milestone: 1, anniv: 1, food: 1, event: 1 };
 /** '매일 기록만 지우기'에서 남기는 종류(성장 탭 기록) */
-const GROWTH_TYPES = { growth: 1, vax: 1, checkup: 1, hospital: 1, milestone: 1, anniv: 1 };
+const GROWTH_TYPES = { growth: 1, vax: 1, checkup: 1, hospital: 1, milestone: 1, anniv: 1, event: 1 };
 const KEEP_DAYS = 45;
 const MAX_FAILS = 10;              // 1시간 안에 PIN을 이만큼 틀리면
 const LOCK_SECONDS = 900;          // 15분 동안 모든 PIN을 막는다(맞는 PIN도). 이미 로그인한 휴대폰은 기록을 들고 기다렸다 올림
@@ -279,7 +279,7 @@ const API = {
 
 /* ---------- 기록 쓰기 ---------- */
 /** 서버 쪽 최소 검사: 종류·시각·글자 길이(앱이 아닌 곳에서 이상한 값이 들어오지 않게) */
-const KNOWN_TYPES = { feed: 1, sleep: 1, diaper: 1, bath: 1, temp: 1, med: 1, walk: 1, memo: 1, food: 1, growth: 1, vax: 1, checkup: 1, hospital: 1, milestone: 1, anniv: 1 };
+const KNOWN_TYPES = { feed: 1, sleep: 1, diaper: 1, bath: 1, temp: 1, med: 1, walk: 1, memo: 1, food: 1, growth: 1, vax: 1, checkup: 1, hospital: 1, milestone: 1, anniv: 1, event: 1 };
 function check_(r, isAdd) {
   r = r || {};
   if (isAdd && !KNOWN_TYPES[r.type]) throw new Error('알 수 없는 기록 종류예요.');

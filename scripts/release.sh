@@ -5,5 +5,5 @@ cd "$(dirname "$0")/.."
 v="v$(TZ=Asia/Seoul date +%Y%m%d-%H%M%S)"
 sed -i.bak -E "s/^const VERSION = '[^']*';/const VERSION = '${v}';/" sw.js && rm -f sw.js.bak
 grep -q "const VERSION = '${v}';" sw.js || { echo "VERSION 갱신 실패"; exit 1; }
-for f in app.js art.js demo.js growth.js look.js sw.js; do node --check "$f"; done
+for f in app.js art.js cal.js demo.js growth.js look.js sw.js; do node --check "$f"; done
 echo "버전: ${v}"

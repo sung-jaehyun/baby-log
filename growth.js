@@ -2,8 +2,8 @@
 /* 성장 탭: 기념일·월간 리포트, 키·몸무게(백분위), 예방접종·검진·병원, 발달·이유식
    모든 기록은 기존 '기록' 시트에 새 종류로 저장한다(저장·재시도·동기화는 app.js 대기열 그대로). */
 
-const LONG_TYPES = new Set(['growth', 'vax', 'checkup', 'hospital', 'milestone', 'anniv', 'food']);
-const GROWTH_ONLY = new Set(['growth', 'vax', 'checkup', 'hospital', 'milestone', 'anniv']);   // 홈·하루 목록에 안 나옴
+const LONG_TYPES = new Set(['growth', 'vax', 'checkup', 'hospital', 'milestone', 'anniv', 'food', 'event']);
+const GROWTH_ONLY = new Set(['growth', 'vax', 'checkup', 'hospital', 'milestone', 'anniv', 'event']);   // 홈·하루 목록에 안 나옴
 const GR = { sub: 'growth', kind: 'w', health: 'vax', dev: 'ms', allGrowth: false, allHosp: false, month: null, vaxAll: false, open: {} };
 
 /* ---------- 날짜 ---------- */
@@ -97,7 +97,7 @@ function doneMap(type) {
   return m;
 }
 const dupsOf = (type, key) => byType(type).filter((r) => r.d1 === key && r.d3 !== '선택').sort((a, b) => a.start - b.start);
-const monthWin = (from, to) => (from === to ? `${from}개월` : to == null ? `${from}개월부터` : from >= 48 && to % 12 === 11 ? `${from / 12}~${(to + 1) / 12 - 1}세` : `${from}~${to}개월`);
+const monthWin = (from, to) => (from === to ? `${from}개월` : to == null ? `${from}개월부터` : from >= 48 && from % 12 === 0 && to % 12 === 11 ? `${from / 12}~${(to + 1) / 12 - 1}세` : `${from}~${to}개월`);
 function schedInfo(item, done) {
   const b = birthKey(); if (!b) return null;
   const today = dkey(Date.now());
