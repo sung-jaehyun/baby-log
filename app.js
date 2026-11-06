@@ -328,6 +328,9 @@ const nightOf = (r) => (r._nks === r.start ? r._nk : (r._nks = r.start, r._nk = 
 const sleepEnd = (r, now) => r.end || now;
 const sleeps = () => S._sleeps || (S._sleeps = live().filter((r) => r.type === 'sleep'));
 const openSleep = () => { const s = sleeps(); for (let i = s.length - 1; i >= 0; i--) if (!s[i].end) return s[i]; return null; };
+const FEED_MIN = 5, FEED_MAX = 400;
+const NAP_SHORT = 20;   // 이 분보다 짧게 끝난 낮잠(토막잠)은 '몇 번째 낮잠' 셀 때 빼기(합계·횟수 통계에는 그대로 들어감)
+const countsAsNap = (r) => !r.end || (r.end - r.start) >= NAP_SHORT * MIN;   // 분유 한 번 양(ml) 범위: 입력창·고치기 화면 같은 기준
 const lastOf = (type, fn) => { const l = live(); for (let i = l.length - 1; i >= 0; i--) if (l[i].type === type && (!fn || fn(l[i]))) return l[i]; return null; };
 const isPoop = (r) => r.d1 === '대변' || r.d1 === '둘다';
 const WARN_COLORS = ['흰색·회색', '빨강', '검정'];
@@ -403,7 +406,7 @@ function statusInfo() {
       const tot = segs.reduce((s, r) => s + (sleepEnd(r, now) - r.start), 0) / MIN;
       return { ...base, mode: 'night', open, el, tot, pct: Math.min(100, ((now - first.start) / Math.max(1, wakeAt - first.start)) * 100), wakeAt };
     }
-    const idx = dayNaps(dkey(open.start)).filter((r) => r.start <= open.start).length;
+    const idx = dayNaps(dkey(open.start)).filter((r) => r.start <= open.start && (r.id === open.id || countsAsNap(r))).length;
     const pn = P.naps[idx - 1];
     if (!pn) return { ...base, mode: 'nap', open, el, idx, target: null };
     const target = pn.e - pn.s, limit = pn.max || target;
@@ -416,10 +419,14 @@ function statusInfo() {
   const el = (now - last.end) / MIN;
   // 밤잠 뒤 깸: 계획 기상 1시간 이내면 아침 기상으로 보고 낮 일정 안내, 그보다 이르면 밤중 깸
   if (last.kind === '밤' && isNightTime(now) && at(addDays(nightOf(last), 1), P.raw.wake) - last.end > 60 * MIN) return { ...base, mode: 'nightwake', el, last };
-  const n = last.kind === '밤' ? 1 : dayNaps(today).filter((r) => r.end && r.end <= last.end).length + 1;
+  const n = last.kind === '밤' ? 1 : dayNaps(today).filter((r) => r.end && r.end <= last.end && countsAsNap(r)).length + 1;
   let target, pred, next;
+  const bedAt = at(today, P.raw.bed), lastWW = P.ww[P.ww.length - 1] || 120;
   if (n <= P.naps.length) { target = P.ww[n - 1]; pred = last.end + target * MIN; next = `낮잠${n}`; }
-  else { pred = at(today, P.raw.bed); target = Math.max(P.ww[P.ww.length - 1] || 120, (pred - last.end) / MIN); next = '밤잠'; }
+  else if ((bedAt - last.end) / MIN > lastWW + 90) {
+    // 일정표보다 낮잠을 더 잤는데 밤잠까지 많이 남음: 깨시 4시간 같은 무리한 목표 대신 한 번 더 재우기 안내
+    target = P.ww[P.naps.length - 1] || lastWW; pred = last.end + target * MIN; next = '추가 낮잠';
+  } else { pred = bedAt; target = Math.max(lastWW, (pred - last.end) / MIN); next = '밤잠'; }
   return { ...base, mode: 'awake', el, n, last: n > P.naps.length, target, pred, next, pct: Math.min(100, (el / target) * 100), color: tone((pred - now) / MIN) };
 }
 function charState() {
@@ -464,7 +471,7 @@ function recText(r) {
 }
 const TINT = { feed: 't-feed', sleep: 't-sleep', diaper: 't-diaper', bath: 't-bath', walk: 't-bath', food: 't-feed' };
 const recIcon = (r) => `<span class="ic ${TINT[r.type] || 't-other'}">${ART.icons[r.type === 'sleep' && !r.end ? 'sleep' : (TYPES[r.type] || {}).i || 'memo']}</span>`;
-/* 기록 한 줄 (누가 기록했는지는 화면에 보이지 않음) */
+/* 기록 한 줄 (누가 기록했는지는 목록에 안 보임 — 기록을 열면 수정 창에 보임) */
 function recItem(r) {
   const x = recText(r);
   const memo = r.type !== 'memo' && r.memo ? `<small>${esc(r.memo)}</small>` : '';
@@ -506,6 +513,7 @@ function render(force) {
   if (same && y) window.scrollTo(0, y);   // 같은 화면을 새로 그릴 때 스크롤 위치 유지
   S._lastTab = S.tab;
   renderTabs();
+  backSync();
 }
 function renderTabs() {
   const t = [['home', '홈'], ['day', '하루'], ['pattern', '패턴'], ['growth', '성장']];
@@ -618,10 +626,30 @@ function statusCard(st) {
     return card('밤중에 깼어요', '🌙 밤중', `${hm(st.last.end)} 깸 · 다시 재우면 "잠 시작"`,
       tile('S', 'wake', '잠에서 깬 지', minShort(st.el), null, '', '다시 재우면 잠 시작'));
   }
-  return card(`${who} 지금 깨어 있어요`, '☀️ 깸', `${st.last ? '마지막 깨시' : `${st.n}번째 깨시`} · 목표 ${minShort(st.target)}`,
+  return card(`${who} 지금 깨어 있어요`, '☀️ 깸', todoLine(st),
     tile('S', 'sleep', '잠에서 깬 지', minShort(st.el), st.pct, st.color === 'var(--nap)' ? 'var(--accent)' : st.color, `${st.next} ${hm(st.pred)}쯤`));
 }
 
+/* 깨어 있을 때 상태 카드 제목 아래 한 줄: 다음 잠·수유 중 먼저 오는 것을 말로 (15분 이내면 '곧', 지나면 '지났어요') */
+function todoLine(st) {
+  const now = Date.now(), c = [{ w: st.next === '밤잠' ? '밤잠' : '낮잠', l: st.next, t: st.pred }];
+  if (st.feedInfo && st.feedInfo.pred > now - 3 * HOUR) c.push({ w: '분유', l: '분유', t: st.feedInfo.pred });   // 남은 일정 목록과 같은 기준
+  c.sort((a, b) => a.t - b.t);
+  const soon = c.filter((x) => x.t - now <= 15 * MIN), names = (l) => l.map((x) => x.w).join('·');
+  const past = soon.filter((x) => x.t <= now), next = soon.filter((x) => x.t > now);
+  if (past.length && next.length) return `<span class="do over">${names(past)} 시간이 지났어요 · 곧 ${names(next)}</span>`;
+  if (past.length) return `<span class="do over">${names(past)} 시간이 지났어요</span>`;
+  if (next.length) return `<span class="do soon">곧 ${names(next)} 시간이에요</span>`;
+  return `<span class="do">다음은 ${esc(c[0].l)} · ${hm(c[0].t)}쯤</span>`;
+}
+/* 예상 수유 시각과 가장 가까운(90분 안) 일정표 수유의 이름. next = 그 다음에 보여줄 일정표 수유 번호 */
+function feedLabelFor(P, key, pred) {
+  const pt = (f) => at(key, hmM(f.t));
+  let bi = -1; P.feeds.forEach((f, i) => { if (bi < 0 || Math.abs(pt(f) - pred) < Math.abs(pt(P.feeds[bi]) - pred)) bi = i; });
+  if (bi >= 0 && Math.abs(pt(P.feeds[bi]) - pred) <= 90 * MIN) return { label: P.feeds[bi].l, next: bi + 1 };
+  const n = P.feeds.findIndex((f) => pt(f) > pred);
+  return { label: '수유', next: n < 0 ? P.feeds.length : n };
+}
 /* 오늘 남은 일정: 다음 잠·다음 수유는 실제 기록으로 다시 계산한 시각, 그 뒤는 일정표 시각 */
 function planItems(st) {
   const now = Date.now(), today = dkey(now), P = st.P, out = [];
@@ -636,9 +664,12 @@ function planItems(st) {
   let napFrom = 0;
   if (st.mode === 'awake') { out.push({ t: st.pred, n: st.next, i: 'sleep', due: 1 }); napFrom = st.last ? P.naps.length : st.n; }
   else if (st.mode === 'nap') { if (st.pred) out.push({ t: st.pred, n: '깸', i: 'wake', due: 1 }); napFrom = st.idx; }
-  const fedToday = dayRecs(today).filter((r) => r.type === 'feed' && !(isNightTime(r.start) && minOfDay(r.start) < 12 * 60)).length;
-  let feedFrom = fedToday;
-  if (st.feedInfo && st.feedInfo.pred > now - 3 * HOUR) { out.push({ t: st.feedInfo.pred, n: (P.feeds[fedToday] || {}).l || '수유', i: 'feed', due: 1 }); feedFrom = fedToday + 1; }
+  // 다음 수유 이름은 오늘 몇 번 먹었는지가 아니라 예상 시각과 가장 가까운 일정표 수유로 정한다(수유가 많은 날 막수가 당겨지지 않게)
+  let feedFrom = P.feeds.findIndex((f) => plan(today, f.t) > now); if (feedFrom < 0) feedFrom = P.feeds.length;
+  if (st.feedInfo && st.feedInfo.pred > now - 3 * HOUR) {
+    const f = feedLabelFor(P, today, st.feedInfo.pred);
+    out.push({ t: st.feedInfo.pred, n: f.label, i: 'feed', due: 1 }); feedFrom = f.next;
+  }
   const after = Math.max(now, ...out.map((o) => o.t));
   P.naps.forEach((n, i) => { const t = plan(today, n.s); if (i >= napFrom && t > now) out.push({ t, n: `낮잠${i + 1}`, i: 'sleep' }); });
   P.feeds.forEach((f, i) => { const t = plan(today, f.t); if (i >= feedFrom && t > after - 30 * MIN) out.push({ t, n: f.l, i: 'feed' }); });
@@ -655,8 +686,8 @@ function planStrip(st) {
     <div class="strip">${items.map((o, i) => `<div class="sc ${i === 0 ? 'on' : ''}"><b>${hm(o.t)}</b><span>${ART.icons[o.i]}${esc(o.n)}</span></div>`).join('')}</div></div>`;
 }
 function lastCard(r) {
-  const x = recText(r);
-  return `<button class="card last" data-act="edit" data-id="${esc(r.id)}">${recIcon(r)}<div style="min-width:0"><div class="k">마지막 기록</div>
+  const x = recText(r), just = S.justSaved && S.justSaved.id === r.id && Date.now() < S.justSaved.until;
+  return `<button class="card last${just ? ' just' : ''}" data-act="edit" data-id="${esc(r.id)}">${recIcon(r)}<div style="min-width:0"><div class="k">${just ? '✓ 방금 저장' : '마지막 기록'}</div>
     <div class="v">${esc(x.t)} · ${hm(r.start)}</div></div><span class="ed">고치기 ›</span></button>`;
 }
 /* 홈 알림: 기념일(오늘·내일), 지금 맞을 접종·검진, 오늘 하루 메모만 */
@@ -692,6 +723,7 @@ function viewDay() {
   <div class="card"><div class="clock">${clockSvg(key, sm)}</div>
     <div class="legend"><span><i style="background:var(--night)"></i>밤잠</span><span><i style="background:var(--nap)"></i>낮잠</span>
     <span><i style="background:var(--feed);height:3px"></i>수유</span><span><i style="background:var(--bath);height:3px"></i>목욕</span></div></div>
+  <div class="sharebar"><button class="pill" data-act="shareDay">📤 이 날 요약 공유</button></div>
   <div class="sum4">${tileS('feed', 't-feed', '수유', `${sm.feedN}회·${sm.feedMl}`)}${tileS('sleep', 't-sleep', '낮잠', `${sm.napN}회·${minShort(sm.napMin)}`)}
     ${tileS('sleep', 't-sleep', `밤잠${ns.count > 1 ? ` (최장 ${minShort(ns.longest)})` : ''}`, ns.tot ? minShort(ns.tot) : '-')}${tileS('diaper', 't-diaper', '기저귀', `소${sm.pee}·대${sm.poo}`)}</div>
   <div class="card"><div class="h">계획 대비<span>${esc(planFor(key).name)} 일정</span></div>${compareList(key)}</div>
@@ -1320,21 +1352,57 @@ function logout(msg) {
 
 /* ---------- 시트(아래 창)와 알림 ---------- */
 function openSheet(html, onMount, opts = {}) {
-  closeSheet();
+  closeSheet(true);
   const d = document.createElement('div');
   d.className = 'dim'; d.id = 'dim';
   d.innerHTML = `<div class="sheet" role="dialog">${html}</div>`;
+  if (opts.locked) d.dataset.locked = '1';
+  d._onClose = opts.onClose || null;
   if (!opts.locked) d.addEventListener('click', (e) => { if (e.target === d) closeSheet(); });
   document.body.appendChild(d);
   if (onMount) onMount(d.firstChild);
+  backSync();
 }
-function closeSheet() { const d = $('#dim'); if (d) d.remove(); }
+/* replacing = 곧바로 다른 창을 여는 중(뒤로가기 칸 정리 안 함) */
+function closeSheet(replacing) { const d = $('#dim'); if (!d) return; const f = d._onClose; d._onClose = null; d.remove(); if (f) f(); if (replacing !== true) backSync(); }
+
+/* 안드로이드 뒤로가기: 앱을 끄지 않고 [열린 창 → 홈 아닌 탭(홈으로)] 순서로 닫고, 홈에서는 앱 종료.
+   지금 화면에 필요한 칸 수(창 1 + 홈 아닌 탭 1)만큼 기록(history) 칸을 맞춰 둔다.
+   - 칸은 사용자가 누른 직후에만 쌓는다(크롬은 터치 없이 쌓은 칸을 건너뛸 수 있음). 뒤로가기 처리 중에는 쌓지 않음
+   - 버튼으로 창을 닫는 등 칸이 남으면 조용히 꺼낸다(안 그러면 홈에서 뒤로가기를 두 번 눌러야 꺼짐) */
+let backArmed = 0, backReleasing = false, backTimer = 0;
+const backNeed = () => (S.auth ? (S.tab !== 'home' ? 1 : 0) + ($('#dim') ? 1 : 0) : 0);
+function backSync() { clearTimeout(backTimer); backTimer = setTimeout(backFix, 0); }   // 창 닫고 바로 다른 창을 여는 경우를 한 번에 처리
+function backFix() {
+  if (backReleasing || document.querySelector('.crop-ov')) return;
+  const need = backNeed();
+  try {
+    while (backArmed < need) { history.pushState({ bg: 1 }, ''); backArmed++; }
+    if (backArmed > need) { const k = backArmed - need; backArmed = need; backReleasing = true; popSkip(); history.go(-k); }
+  } catch (e) { backReleasing = false; }
+}
+function popSkip() { window.__popSkip = (window.__popSkip || 0) + 1; window.__popSkipAt = Date.now(); }
+window.addEventListener('popstate', () => {
+  if (window.__popSkip > 0) {
+    window.__popSkip--;
+    if (Date.now() - (window.__popSkipAt || 0) < 2000) {   // 앱이 스스로 꺼낸 칸(오래된 표시는 무시하고 진짜 뒤로가기로 처리)
+      if (backReleasing) { backReleasing = false; backSync(); }
+      return;
+    }
+  }
+  backReleasing = false;
+  if (document.querySelector('.crop-ov')) return;              // 사진 위치 맞추기 화면은 스스로 닫음
+  backArmed = Math.max(0, backArmed - 1);
+  const d = $('#dim');
+  if (d && d.dataset.locked) { try { history.pushState({ bg: 1 }, ''); backArmed++; } catch (e) {} return; }   // 첫 PIN 변경 창은 안 닫힘
+  if (d) closeSheet(true);
+  else if (S.auth && S.tab !== 'home') { S.tab = 'home'; closeToast(); render(true); window.scrollTo(0, 0); }
+});
 function ask(msg, yes = '추가', no = '취소') {
   return new Promise((res) => {
     openSheet(`<h3>확인</h3><div style="line-height:1.6">${msg}</div><button class="primary" data-r="1">${yes}</button><button class="ghost" data-r="0">${no}</button>`, (el) => {
-      el.addEventListener('click', (e) => { const b = e.target.closest('[data-r]'); if (b) { closeSheet(); res(b.dataset.r === '1'); } });
-    });
-    $('#dim').addEventListener('click', (e) => { if (e.target.id === 'dim') res(false); });
+      el.addEventListener('click', (e) => { const b = e.target.closest('[data-r]'); if (b) { const v = b.dataset.r === '1'; $('#dim')._onClose = null; closeSheet(); res(v); } });
+    }, { onClose: () => res(false) });
   });
 }
 let noteTimer = 0;
@@ -1350,7 +1418,9 @@ function toast(rec, mode, label, opts = {}) {
   const t = document.createElement('div');
   t.className = 'toast'; t.id = 'toast';
   const field = mode === 'end' ? 'end' : 'start';
-  t.innerHTML = `<div class="msg"><span>${esc(label)}</span><small id="toastTime">${hm(rec[field])}</small></div>
+  t.dataset.id = rec.id;
+  const detail = String(label).replace(/ 기록했어요$/, '');
+  t.innerHTML = `<div class="msg"><span class="ok-ic">${CHECK_SVG}</span><div><b>저장됐어요</b><small><span>${esc(detail)}</span> · <span id="toastTime">${hm(rec[field])}</span></small></div></div>
     <div class="acts"><button data-t="-5">−5분</button><button data-t="-10">−10분</button><button data-t="edit">시각 수정</button><button data-t="undo" class="x">취소</button></div>
     <div class="timer"><i></i></div>`;
   t.addEventListener('click', (e) => {
@@ -1379,7 +1449,15 @@ function restartToastTimer(t) {
   clearTimeout(toastTimer);
   const bar = t.querySelector('.timer i');
   bar.style.animation = 'none'; void bar.offsetWidth; bar.style.animation = '';
-  toastTimer = setTimeout(closeToast, 5000);
+  toastTimer = setTimeout(() => { const id = t.dataset.id; closeToast(); flashLast(id); }, 5000);
+}
+const CHECK_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>';
+/* 저장 안내가 저절로 닫히면, 홈의 '마지막 기록' 칸이 그 기록일 때 2초간 '방금 저장' 표시 */
+function flashLast(id) {
+  // 화면이 다시 그려져도 유지되도록 상태로 둔다(lastCard가 읽음)
+  S.justSaved = { id, until: Date.now() + 2000 };
+  if (S.tab === 'home') bgRender();
+  setTimeout(() => { if (S.justSaved && S.justSaved.id === id) { S.justSaved = null; if (S.tab === 'home') bgRender(); } }, 2050);
 }
 function closeToast() { clearTimeout(toastTimer); const t = $('#toast'); if (t) t.remove(); }
 
@@ -1532,6 +1610,52 @@ const ACTIONS = {
   },
 };
 Object.assign(ACTIONS, GROWTH_ACTIONS, SET_SHEETS);
+ACTIONS.shareDay = () => shareDay(S.day);
+
+/* 하루 요약을 이미지 한 장으로 만들어 폰 공유 창(카톡 등)으로 보낸다. 공유 창이 없는 기기는 이미지 저장 */
+async function shareDay(key) {
+  if (S._sharing) return; S._sharing = true;
+  try {
+    // 오늘 요약이면 밤잠은 아직 안 왔으니 어젯밤(오늘 아침까지 잔 잠)을 보여준다
+    const isToday = key === dkey(Date.now());
+    const sm = daySummary(key), ns = nightStats(isToday && set('nightMode') !== 'midnight' ? addDays(key, -1) : key), a = babyAge(key), recs = dayRecs(key);
+    const feeds = recs.filter((r) => r.type === 'feed'), bath = recs.filter((r) => r.type === 'bath').pop();
+    const memo = S.memos[key] && S.memos[key].text;
+    const cards = [
+      ['🍼 분유', sm.feedN ? `${sm.feedMl}ml` : '-', sm.feedN ? `${sm.feedN}회 · 마지막 ${hm(feeds[feeds.length - 1].start)}` : '기록 없음'],
+      ['☀️ 낮잠', sm.napN ? minTxt(sm.napMin) : '-', sm.napN ? `${sm.napN}회` : '기록 없음'],
+      [isToday ? '🌙 어젯밤' : '🌙 밤잠', ns.tot ? minTxt(ns.tot) : '-', ns.tot ? `최장 ${minTxt(ns.longest)}${ns.open ? ' · 자는 중' : ''}` : '기록 없음'],
+      ['💧 기저귀 · 목욕', `소변 ${sm.pee} · 대변 ${sm.poo}`, bath ? `목욕 ${hm(bath.start)}` : '목욕 기록 없음'],
+    ];
+    if (document.fonts && document.fonts.ready) await document.fonts.ready;
+    const W = 720, H = memo ? 640 : 590, k = 1.5, cv = document.createElement('canvas');
+    cv.width = W * k; cv.height = H * k;
+    const g = cv.getContext('2d'); g.scale(k, k);
+    const fam = getComputedStyle(document.body).fontFamily, F = (w, px) => `${w} ${px}px ${fam}`;
+    const rr = (x, y, w, h, r, fill) => { g.beginPath(); g.moveTo(x + r, y); g.arcTo(x + w, y, x + w, y + h, r); g.arcTo(x + w, y + h, x, y + h, r); g.arcTo(x, y + h, x, y, r); g.arcTo(x, y, x + w, y, r); g.closePath(); g.fillStyle = fill; g.fill(); };
+    const bg = g.createLinearGradient(0, 0, W, H); bg.addColorStop(0, '#F7F1FD'); bg.addColorStop(1, '#FFF6E6');
+    g.fillStyle = bg; g.fillRect(0, 0, W, H);
+    g.fillStyle = '#4A3F5C'; g.font = F(800, 40); g.fillText(`${babyName()}의 하루`, 40, 82);
+    g.fillStyle = '#7A6E8C'; g.font = F(600, 24); g.fillText(`${dayLabel(key)}${a ? ` · ${a.n}일째` : ''}`, 40, 122);
+    cards.forEach(([t, v, sub], i) => {
+      const x = 40 + (i % 2) * 330, y = 160 + Math.floor(i / 2) * 190;
+      rr(x, y, 310, 170, 24, '#FFFFFF');
+      g.fillStyle = '#9C8FAD'; g.font = F(700, 22); g.fillText(t, x + 24, y + 46);
+      g.fillStyle = '#5D5170'; g.font = F(800, v.length > 9 ? 30 : 38); g.fillText(v, x + 24, y + 102);
+      g.fillStyle = '#7A6E8C'; g.font = F(600, 20); g.fillText(sub, x + 24, y + 140);
+    });
+    g.fillStyle = '#9C8FAD'; g.font = F(700, 20); g.fillText('은우랑', 40, H - 30);
+    if (memo) { g.fillStyle = '#5D5170'; g.font = F(600, 22); g.fillText(`📝 ${memo.length > 26 ? memo.slice(0, 26) + '…' : memo}`, 40, H - 74); }
+    const blob = await new Promise((res) => cv.toBlob(res, 'image/png'));
+    const file = new File([blob], `${babyName()}_${key}.png`, { type: 'image/png' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      try { await navigator.share({ files: [file], title: `${babyName()} ${dayLabel(key)}` }); } catch (e) { if (e && e.name !== 'AbortError') note('공유하지 못했어요'); }
+    } else {
+      const u = URL.createObjectURL(blob), l = document.createElement('a'); l.href = u; l.download = file.name; document.body.appendChild(l); l.click(); l.remove();
+      setTimeout(() => URL.revokeObjectURL(u), 5000); note('요약 이미지를 저장했어요');
+    }
+  } finally { S._sharing = false; }
+}
 /* 서버를 기다리는 버튼은 누르는 동안 막아 두 번 눌리지 않게 */
 function busy(fn) {
   let running = false;
@@ -1567,7 +1691,7 @@ function feedSheet() {
     el.addEventListener('click', async (e) => {
       const b = e.target.closest('button'); if (!b) return;
       if (b.dataset.p) { amt = Number(b.dataset.p); show(); }
-      else if (b.dataset.d) { amt = Math.max(5, Math.min(400, amt + Number(b.dataset.d))); show(); }
+      else if (b.dataset.d) { amt = Math.max(FEED_MIN, Math.min(FEED_MAX, amt + Number(b.dataset.d))); show(); }
       else if (b.id === 'save') {
         closeSheet();
         if (!(await dupCheck('feed'))) return;
@@ -1707,7 +1831,9 @@ function editSheet(arg) {
     <div class="field"><label>양</label><div class="inline"><input type="number" id="ev" value="${esc(r.value)}"><select id="e2">${['g', '숟가락'].map((u) => `<option ${r.d2 === u ? 'selected' : ''}>${u}</option>`).join('')}</select></div></div>
     <div class="field"><label>반응</label><select id="e3">${FOOD_REACT.map((n) => `<option ${r.d3 === n ? 'selected' : ''}>${n}</option>`).join('')}</select></div>`;
   body += `<div class="field"><label>${r.type === 'memo' ? '내용' : '메모'}</label><textarea id="em" rows="2" maxlength="300">${esc(r.memo)}</textarea></div>`;
-  openSheet(`<h3>${ART.icons[T.i]}${T.n} ${isNew ? '기록 추가' : '기록 수정'}</h3>${body}
+  // 누가 기록했는지는 목록에는 안 보이고, 기록을 열었을 때만 보인다
+  const who = !isNew && r.by ? `<div class="lbl" style="margin:-4px 0 10px">기록한 사람 · ${esc(r.by)}</div>` : '';
+  openSheet(`<h3>${ART.icons[T.i]}${T.n} ${isNew ? '기록 추가' : '기록 수정'}</h3>${who}${body}
     <button class="primary" id="save">${isNew ? '추가' : '저장'}</button>${isNew ? '<button class="ghost" id="cancel">닫기</button>' : '<button class="ghost danger" id="del">삭제</button>'}`, (el) => {
     el.addEventListener('change', (e) => { if ((e.target.id === 'es' || e.target.id === 'ee') && $('#ek')) $('#ek').value = ''; });
     el.addEventListener('click', async (e) => {
@@ -1737,6 +1863,7 @@ function editSheet(arg) {
       }
       if ($('#ev')) patch.value = $('#ev').value === '' ? null : Number($('#ev').value);
       if (r.type === 'feed' && !(patch.value > 0)) { note('양을 입력해주세요'); return; }
+      if (r.type === 'feed' && !(patch.value >= FEED_MIN && patch.value <= FEED_MAX)) { note(`분유 양은 ${FEED_MIN}~${FEED_MAX}ml 사이로 입력해주세요`); return; }
       if (r.type === 'temp' && !(patch.value >= 34 && patch.value <= 42)) { note('체온을 확인해주세요'); return; }
       if ($('#e1')) patch.d1 = $('#e1').value.trim();
       if ($('#e2')) patch.d2 = $('#e2').value.trim();

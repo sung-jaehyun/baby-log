@@ -323,11 +323,12 @@ async def main():
         check('테마·글씨체는 이 휴대폰에 저장(새로고침해도 유지)', await pg.evaluate("document.documentElement.dataset.theme") == 'dark' and 'Gaegu' in await pg.evaluate("getComputedStyle(document.body).fontFamily"))
         check('테마는 서버로 안 보냄', 'dark' not in await pg.evaluate("JSON.stringify(JSON.parse(localStorage.demoDB).settings)"))
         await pg.evaluate("LOOK.set('theme','lavender'); LOOK.set('font','pretendard'); render()")
-        await pg.evaluate("(()=>{ const n=Date.now(); addRec({type:'feed',start:n-60000,value:120,by:'장모님'}); S.memos[dkey(n)]={text:'병원 다녀옴',by:'아내'}; render(); })()")
+        gid = await pg.evaluate("(()=>{ const n=Date.now(); const r=addRec({type:'feed',start:n-60000,value:120,by:'장모님'}); S.memos[dkey(n)]={text:'병원 다녀옴',by:'아내'}; render(); return r.id; })()")
         home = await pg.inner_text('#app')
         await pg.click('#tabs [data-tab="day"]'); day = await pg.inner_text('#app')
-        await pg.click('[data-act="edit"]'); sheet = await pg.inner_text('.sheet'); await pg.evaluate('closeSheet()')
-        check('누가 기록했는지 화면에 안 보임(홈·하루·수정 창)', not any(n in t for n in ['장모님', '아내', '재현'] for t in [home, day, sheet]))
+        await pg.click(f'#app [data-act="edit"][data-id="{gid}"]'); sheet = await pg.inner_text('.sheet'); await pg.evaluate('closeSheet()')
+        check('누가 기록했는지 홈·하루 목록엔 안 보임', not any(n in x for n in ['장모님', '아내', '재현'] for x in [home, day]))
+        check('기록을 열면 수정 창에 기록한 사람 표시', '기록한 사람 · 장모님' in sheet, sheet[:80])
         check('오늘 하루 메모는 홈 알림으로', '병원 다녀옴' in home)
         await pg.click('#tabs [data-tab="home"]'); await pg.wait_for_timeout(200)
         n_al = await pg.evaluate("document.querySelectorAll('.alert').length")
@@ -426,6 +427,92 @@ async def main():
         await login(pg, pin_now); await pg.wait_for_timeout(800)
         check('다시 로그인해도 지워진 하루 메모가 되살아나지 않음', not await pg.evaluate("!!S.memos['2026-01-01']"))
         check('화면 오류 없음', not errs, errs)
+
+        print('[4차 피드백 반영]')
+        ctx2 = await b.new_context(viewport={'width': 390, 'height': 844}, locale='ko-KR', timezone_id='Asia/Seoul', accept_downloads=True)
+        p2 = await ctx2.new_page(); e2 = []
+        p2.on('pageerror', lambda e: e2.append(str(e)))
+        await p2.goto(BASE.replace('index.html', 'tests/'))          # 앱 밖 페이지 하나(뒤로가기 끝 확인용)
+        await p2.goto(BASE + '#s=demo'); await login(p2, '2222')
+        # 뒤로가기
+        await p2.click('[data-act="feed"]'); await p2.wait_for_selector('#dim'); await p2.go_back(); await p2.wait_for_timeout(300)
+        check('뒤로가기: 열린 창만 닫히고 앱은 그대로', not await p2.query_selector('#dim') and bool(await p2.query_selector('.hero')))
+        await p2.click('#tabs [data-tab="pattern"]'); await p2.go_back(); await p2.wait_for_timeout(300)
+        check('뒤로가기: 다른 탭에서는 홈으로', await p2.evaluate('S.tab') == 'home')
+        await p2.click('#tabs [data-tab="day"]'); await p2.click('#app [data-act="edit"]'); await p2.wait_for_selector('#dim')
+        await p2.go_back(); await p2.wait_for_timeout(300)
+        check('뒤로가기: 탭 위 창은 창만 닫힘(탭 유지)', not await p2.query_selector('#dim') and await p2.evaluate('S.tab') == 'day')
+        r = await p2.evaluate("(async()=>{ const pr = ask('테스트'); await new Promise(r=>setTimeout(r,80)); history.back(); return await Promise.race([pr, new Promise(r=>setTimeout(()=>r('hang'),1500))]); })()")
+        check('뒤로가기로 확인 창을 닫으면 취소로 처리', r is False, r)
+        # 버튼으로 창을 닫으면 남은 뒤로가기 칸을 꺼냄(폰 앱은 이전 페이지가 없어서, 남아 있으면 홈에서 두 번 눌러야 꺼짐)
+        await p2.click('#tabs [data-tab="home"]'); await p2.wait_for_timeout(200)
+        h0 = await p2.evaluate('history.length')
+        await p2.click('[data-act="feed"]'); await p2.wait_for_selector('#dim'); await p2.click('.sheet .primary'); await p2.wait_for_timeout(400)
+        check('버튼으로 창 닫은 뒤 홈: 남은 뒤로가기 칸 없음(한 번에 앱 종료)', await p2.evaluate("backArmed === 0 && !(history.state && history.state.bg)"), await p2.evaluate("[backArmed, history.state]"))
+        await p2.evaluate('closeToast()')
+        # 탭 + 창: 뒤로가기 처리 중에는 칸을 새로 쌓지 않음(크롬이 터치 없이 쌓은 칸은 건너뛸 수 있어서)
+        await p2.click('#tabs [data-tab="day"]'); await p2.click('#app [data-act="edit"]'); await p2.wait_for_selector('#dim'); await p2.wait_for_timeout(100)
+        a2 = await p2.evaluate('[backArmed, history.length]')
+        await p2.go_back(); await p2.wait_for_timeout(300)
+        a1 = await p2.evaluate('[backArmed, history.length, S.tab, !!document.getElementById("dim")]')
+        await p2.go_back(); await p2.wait_for_timeout(300)
+        a0 = await p2.evaluate('[backArmed, S.tab]')
+        check('탭+창: 칸 2개 → 뒤로(창 닫힘, 칸 1개·새로 안 쌓음) → 뒤로(홈, 칸 0개)', a2[0] == 2 and a1[0] == 1 and a1[1] == a2[1] and a1[2] == 'day' and not a1[3] and a0 == [0, 'home'], [a2, a1, a0])
+        # 분유 양 범위
+        fid = await p2.evaluate("live().filter(r=>r.type==='feed').pop().id")
+        await p2.evaluate(f"editSheet('{fid}')"); await p2.fill('#ev', '99999'); await p2.click('#save'); await p2.wait_for_timeout(200)
+        v1 = await p2.evaluate(f"S.recs['{fid}'].value")
+        await p2.fill('#ev', '400'); await p2.click('#save'); await p2.wait_for_timeout(200)
+        check('수정 창 분유 양 5~400ml만 저장', str(v1) != '99999' and await p2.evaluate(f"S.recs['{fid}'].value") == 400, v1)
+        # 지금 할 일 한 줄
+        tl = await p2.evaluate("""(()=>{ const n=Date.now(), M=60000;
+          return [todoLine({next:'낮잠2',pred:n+60*M,feedInfo:{pred:n+10*M}}), todoLine({next:'낮잠2',pred:n-5*M,feedInfo:{pred:n-1*M}}),
+                  todoLine({next:'밤잠',pred:n+90*M,feedInfo:{pred:n+120*M}}), todoLine({next:'낮잠3',pred:n+8*M,feedInfo:{pred:n+12*M}})]; })()""")
+        check('한 줄 안내: 15분 안이면 "곧 분유 시간이에요"', '곧 분유 시간이에요' in tl[0], tl[0])
+        check('한 줄 안내: 둘 다 지나면 "낮잠·분유 시간이 지났어요"', '낮잠·분유 시간이 지났어요' in tl[1], tl[1])
+        check('한 줄 안내: 여유 있으면 "다음은 밤잠 · 시각쯤"', '다음은 밤잠 ·' in tl[2], tl[2])
+        check('한 줄 안내: 둘 다 곧이면 함께', '곧 낮잠·분유 시간이에요' in tl[3], tl[3])
+        # 다음 수유 이름(가까운 일정표 수유)
+        fl = await p2.evaluate("""(()=>{ const k=dkey(Date.now()), P=planFor(k);
+          return ['16:50','17:46','19:00','22:40'].map(t=>feedLabelFor(P,k,at(k,t)).label); })()""")
+        check('다음 수유 이름은 시각 기준(17:46→수유4, 19:00→막수, 22:40→수유)', fl == ['수유4', '수유4', '막수', '수유'], fl)
+        # 토막잠
+        cn = await p2.evaluate("[countsAsNap({start:0,end:10*60000}), countsAsNap({start:0,end:25*60000}), countsAsNap({start:0,end:null})]")
+        check('20분 미만 낮잠은 몇 번째 낮잠 셀 때 뺌', cn == [False, True, True], cn)
+        st = await p2.evaluate("""(()=>{ const k=dkey(Date.now()), P=planFor(k), now=Date.now();
+          const save = S.recs; S.recs = {}; dirty();
+          const add = (o, i) => { S.recs['t'+i] = Object.assign({id:'t'+i,value:null,d1:'',d2:'',d3:'',memo:'',by:'',created:now,updated:now,deleted:false}, o); };
+          // 아침 기상 + 낮잠을 일정표보다 2번 더(모두 25분), 마지막 낮잠 직후
+          add({type:'sleep',kind:'밤',start:now-12*3600000,end:now-11*3600000}, 0);
+          const n = P.naps.length + 2; for (let i=0;i<n;i++) add({type:'sleep',kind:'낮',start:now-(11-i)*3600000+600000,end:now-(11-i)*3600000+600000+25*60000}, i+1);
+          dirty(); const s = statusInfo(); S.recs = save; dirty(); return [s.mode, s.next, Math.round(s.target), P.raw.bed]; })()""")
+        check('일정보다 낮잠이 많아도 무리한 깨시 목표 안 냄(추가 낮잠 또는 밤잠)', st[0] != 'awake' or st[1] in ('추가 낮잠', '밤잠') and st[2] < 4 * 60, st)
+        # 저장 안내
+        await p2.click('#tabs [data-tab="home"]'); await p2.click('[data-act="feed"]'); await p2.click('.sheet .primary'); await p2.wait_for_selector('#toast')
+        tt = await p2.inner_text('#toast')
+        check('저장 안내: "저장됐어요" + 기록 내용·시각', '저장됐어요' in tt and '분유' in tt and 'ml' in tt, tt)
+        await p2.wait_for_timeout(5300)
+        check('저장 안내 5초 뒤 닫히고 마지막 기록 칸에 "방금 저장"', not await p2.query_selector('#toast') and bool(await p2.query_selector('.card.last.just')) and '방금 저장' in await p2.inner_text('.card.last'))
+        # 하루 요약 공유(공유 창 없는 환경 → 이미지 저장)
+        await p2.click('#tabs [data-tab="day"]')
+        async with p2.expect_download(timeout=8000) as dl:
+            await p2.click('[data-act="shareDay"]')
+        d = await dl.value
+        check('하루 요약 이미지 만들기(공유 창 없으면 저장)', d.suggested_filename.endswith('.png'), d.suggested_filename)
+        # 병원용 리포트
+        await p2.click('#tabs [data-tab="growth"]'); await p2.click('[data-act="grSub"][data-k="health"]'); await p2.click('[data-act="grHospRep"]')
+        await p2.wait_for_selector('.sheet.hosp')
+        n7 = await p2.evaluate("document.querySelectorAll('.sheet.hosp .htbl tbody tr').length")
+        ok = await p2.evaluate("""(()=>{ const k=addDays(dkey(Date.now()),-1), s=daySummary(k), tr=[...document.querySelectorAll('.sheet.hosp .htbl tbody tr')].pop();
+          return tr.children[1].textContent.trim() === `${s.feedN}회 / ${s.feedMl}ml` || (!hasData(k)); })()""")
+        await p2.click('.sheet.hosp [data-hn="14"]')
+        n14 = await p2.evaluate("document.querySelectorAll('.sheet.hosp .htbl tbody tr').length")
+        check('병원용 리포트: 7일·14일 표, 어제 값이 하루 합계와 같음', n7 == 7 and n14 == 14 and ok, [n7, n14, ok])
+        await p2.go_back(); await p2.wait_for_timeout(300)
+        check('병원용 리포트도 뒤로가기로 닫힘', not await p2.query_selector('#dim') and await p2.evaluate('S.tab') == 'growth')
+        await p2.click('#tabs [data-tab="home"]'); await p2.go_back(); await p2.wait_for_timeout(500)
+        check('홈에서 뒤로가기는 앱 종료(이전 페이지로)', '/tests/' in p2.url, p2.url)
+        check('화면 오류 없음(4차)', not e2, e2)
         await b.close()
     print('\n결과:', '모두 통과' if not FAILS else f'{len(FAILS)}건 실패: ' + ', '.join(FAILS))
     sys.exit(1 if FAILS else 0)

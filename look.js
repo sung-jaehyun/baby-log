@@ -104,7 +104,7 @@ const LOOK = (() => {
       const close = (box, fromBack) => {
         if (closed) return; closed = true;
         window.removeEventListener('resize', onResize); window.removeEventListener('popstate', onPop); ov.remove();
-        if (!fromBack) try { history.back(); } catch (x) {}
+        if (!fromBack) try { window.__popSkip = (window.__popSkip || 0) + 1; window.__popSkipAt = Date.now(); history.back(); } catch (x) {}
         done(box);
       };
       const onPop = () => close(null, true);

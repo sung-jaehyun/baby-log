@@ -262,7 +262,8 @@ function healthCard() {
   if (GR.health === 'vax') body = vaxBody(vax);
   else if (GR.health === 'check') body = itemRows(chk, 'grCheck');
   else body = hospBody();
-  return `${upHtml || lateN ? `<div class="card"><div class="h">다가오는 일정</div>${upHtml ? `<div class="up">${upHtml}</div>` : ''}
+  return `<button class="card hosp-btn" data-act="grHospRep"><span>🏥 병원용 리포트</span><small>최근 7·14·30일 기록을 한 장으로 · PDF 저장</small><b>›</b></button>
+    ${upHtml || lateN ? `<div class="card"><div class="h">다가오는 일정</div>${upHtml ? `<div class="up">${upHtml}</div>` : ''}
     ${lateN ? `<div class="lbl" style="margin-top:6px">시기 지난 미완료 ${lateN}건 · 이미 했다면 눌러서 체크해주세요</div>` : ''}</div>` : ''}
     <div class="card"><div class="seg">${seg}</div>${body}</div>`;
 }
@@ -585,7 +586,89 @@ function loadMonth(ym) {
 }
 
 /* ---------- 동작 ---------- */
+/* ---------- 병원용 리포트: 최근 N일(오늘 제외) 생활 기록 + 특이 기록 + 성장·접종을 한 장으로 ---------- */
+function hospStats(n) {
+  const today = dkey(Date.now()), b = birthKey(), warn = Number(set('tempWarn')) || 37.5;
+  const keys = []; for (let i = n; i >= 1; i--) { const k = addDays(today, -i); if (!b || k >= b) keys.push(k); }
+  const rows = keys.map((k) => {
+    const s = daySummary(k), nt = nightStats(k), l = dayRecs(k);
+    const temps = l.filter((r) => r.type === 'temp').map((r) => Number(r.value)).filter((v) => v > 0);
+    return { k, s, nt, any: hasData(k), tmax: temps.length ? Math.max(...temps) : null };
+  });
+  const from = keys.length ? dstart(keys[0]) : Date.now(), to = dstart(today);
+  const inR = (r) => r.start >= from && r.start < to;
+  const L = live().filter(inR);
+  const d = rows.filter((r) => r.any), nd = d.filter((r) => r.nt.tot && !r.nt.open);
+  return {
+    keys, rows, days: d.length,
+    feedMl: avg(d.filter((r) => r.s.feedN).map((r) => r.s.feedMl)), feedN: avg(d.filter((r) => r.s.feedN).map((r) => r.s.feedN)),
+    napMin: avg(d.filter((r) => r.s.napN).map((r) => r.s.napMin)), napN: avg(d.filter((r) => r.s.napN).map((r) => r.s.napN)),
+    night: avg(nd.map((r) => r.nt.tot)), longest: avg(nd.map((r) => r.nt.longest)),
+    poo: d.reduce((t, r) => t + r.s.poo, 0),
+    fever: L.filter((r) => r.type === 'temp' && Number(r.value) >= warn),
+    loose: L.filter((r) => r.type === 'diaper' && (r.d3 === '묽음' || /설사|묽/.test(r.memo || ''))),
+    badColor: L.filter((r) => r.type === 'diaper' && WARN_COLORS.includes(r.d2)),
+    meds: L.filter((r) => r.type === 'med'),
+    hosp: L.filter((r) => r.type === 'hospital'),
+  };
+}
+function hospHtml(n) {
+  const a = hospStats(n), b = birthKey(), today = dkey(Date.now()), age = babyAge(addDays(today, -1));
+  const t = (m) => (m == null ? '-' : minShort(m)), tl = (m) => (m == null ? '-' : minTxt(m)), n1 = (v) => (v == null ? '-' : (Math.round(v * 10) / 10).toString());
+  const when = (r) => `${shortDate(dk(r))} ${hm(r.start)}`;
+  const list = (arr, f, empty = '이 기간 없음') => (arr.length ? arr.slice(0, 6).map(f).join(', ') + (arr.length > 6 ? ` 외 ${arr.length - 6}건` : '') : `<span class="lbl">${empty}</span>`);
+  const M = measures(), lw = M.w.sort((x, y) => x.r.start - y.r.start).pop(), lh = M.h.sort((x, y) => x.r.start - y.r.start).pop();
+  const pc = (kind, m) => { const p = m ? percentile(kind, ageMonths(m.key), m.v) : null; return p != null ? ` (백분위 ${pctTxt(p)})` : ''; };
+  const vd = doneMap('vax'), vax = vaxList().map((it) => ({ it, s: schedInfo(it, vd) })).filter((x) => x.s);
+  const done = vax.filter((x) => x.s.st === 'done'), late = vax.filter((x) => x.s.st === 'late').length;
+  const next = vax.filter((x) => (x.s.st === 'now' || x.s.st === 'wait') && x.s.start).sort((x, y) => (x.s.start < y.s.start ? -1 : 1)).slice(0, 3);
+  const first = a.keys[0], last = a.keys[a.keys.length - 1];
+  const kv = (k, v, s) => `<div><span>${k}</span><b>${v}</b><small>${s}</small></div>`;
+  const rows = a.rows.map((r) => `<tr><td>${shortDate(r.k)}(${WEEK[new Date(dstart(r.k)).getDay()]})</td>${r.any ? `<td>${r.s.feedN}회 / ${r.s.feedMl}ml</td><td>${r.s.napN}회 / ${t(r.s.napMin)}</td><td>${r.nt.tot ? t(r.nt.tot) : '-'}</td><td>${r.nt.tot ? t(r.nt.longest) : '-'}</td><td>${r.s.poo}회</td>` : '<td colspan="5" class="lbl">기록 없음</td>'}<td>${r.tmax != null ? `${r.tmax.toFixed(1)}℃` : '-'}</td></tr>`).join('');
+  return `<div class="noprint"><div class="seg" style="margin-bottom:10px">${[7, 14, 30].map((d) => `<button class="seg-b ${d === n ? 'on' : ''}" data-hn="${d}">최근 ${d}일</button>`).join('')}</div></div>
+  <div class="hrep">
+    <h2>${esc(babyName())} · 생활 기록 요약</h2>
+    <div class="meta">${b ? `${esc(b.replace(/-/g, '. '))}. 출생 · ` : ''}${age ? `생후 ${age.n}일 (${age.months}개월) · ` : ''}${first ? `기간 ${shortDate(first)} ~ ${shortDate(last)} (${a.keys.length}일, 기록 ${a.days}일)` : '기간 없음'}</div>
+    <div class="hsec">한눈에 (기록 있는 날 평균)</div>
+    <div class="hkv">${kv('하루 분유', a.feedMl != null ? `${Math.round(a.feedMl)}ml` : '-', a.feedN != null ? `${n1(a.feedN)}회 · 1회 약 ${Math.round(a.feedMl / a.feedN)}ml` : '')}
+      ${kv('낮잠', tl(a.napMin), a.napN != null ? `하루 ${n1(a.napN)}회` : '')}${kv('밤잠', tl(a.night), a.longest != null ? `최장 통잠 평균 ${tl(a.longest)}` : '')}
+      ${kv('대변', `${a.poo}회`, `${a.keys.length}일 동안`)}</div>
+    <div class="hsec">날짜별</div>
+    <table class="htbl"><thead><tr><th>날짜</th><th>분유</th><th>낮잠</th><th>밤잠</th><th>최장 통잠</th><th>대변</th><th>최고 체온</th></tr></thead><tbody>${rows}</tbody></table>
+    <div class="hsec">특이 기록</div>
+    <div class="hli">• 체온 ${Number(set('tempWarn')) || 37.5}℃ 이상: ${list(a.fever, (r) => `${when(r)} ${Number(r.value).toFixed(1)}℃`)}<br>
+      • 묽은 변·설사: ${list(a.loose, when)}<br>${a.badColor.length ? `• 확인 필요한 변 색: ${list(a.badColor, (r) => `${when(r)} ${esc(r.d2)}`)}<br>` : ''}
+      • 투약: ${list(a.meds, (r) => `${shortDate(dk(r))} ${esc(r.d1)}${r.d2 ? ` ${esc(r.d2)}` : ''}`)}${a.hosp.length ? `<br>• 병원: ${list(a.hosp, (r) => `${shortDate(dk(r))} ${esc(r.d1 || '')}${r.d2 ? `(${esc(r.d2)})` : ''}`)}` : ''}</div>
+    <div class="hsec">성장 · 예방접종</div>
+    <div class="hli">• 몸무게: ${lw ? `${lw.v}kg · ${shortDate(lw.key)}${pc('w', lw)}` : '<span class="lbl">기록 없음</span>'}<br>
+      • 키: ${lh ? `${lh.v}cm · ${shortDate(lh.key)}${pc('h', lh)}` : '<span class="lbl">기록 없음</span>'}<br>
+      • 맞은 접종: ${done.length ? done.map((x) => `${esc(x.it.n)} ${esc(x.it.dose)}`).join(', ') : '<span class="lbl">기록 없음</span>'}<br>
+      • 다음 접종: ${next.length ? next.map((x) => `${esc(x.it.n)} ${esc(x.it.dose)} (${x.s.st === 'now' ? '지금 시기' : `${shortDate(x.s.start)}~`})`).join(', ') : '<span class="lbl">-</span>'}${late ? `<br>• 시기 지난 미완료: ${late}건 <span class="lbl">(이미 맞았다면 앱에 체크 필요)</span>` : ''}</div>
+    <div class="lbl hfoot">은우랑 기록 · ${today.replace(/-/g, '. ')}. 출력 · 오늘(진행 중)은 빼고 계산</div>
+  </div>
+  <div class="noprint"><button class="primary" id="hprint">PDF로 저장 · 인쇄</button><button class="ghost" id="close">닫기</button></div>`;
+}
+function hospReport(n) {
+  GR.hospN = n;
+  const html = hospHtml(n), open = $('#dim .sheet.hosp');
+  if (open) { open.innerHTML = html; return; }
+  openSheet(html, (el) => {
+    el.classList.add('hosp');
+    el.addEventListener('click', (e) => {
+      const btn = e.target.closest('button'); if (!btn) return;
+      if (btn.id === 'close') { closeSheet(); return; }
+      if (btn.id === 'hprint') { const t0 = document.title; document.title = `${babyName()}_기록_${dkey(Date.now())}`; window.print(); setTimeout(() => { document.title = t0; }, 1000); return; }
+      if (btn.dataset.hn) {
+        const d = Number(btn.dataset.hn); hospReport(d);
+        const need = addDays(dkey(Date.now()), -d - 1);
+        if (S.loadedFrom && dstart(need) < S.loadedFrom) ensureRange(need).then(() => { if ($('#dim .sheet.hosp') && GR.hospN === d) hospReport(d); });
+      }
+    });
+  });
+}
+
 const GROWTH_ACTIONS = {
+  grHospRep() { hospReport(7); },
   grSub(el) { GR.sub = el.dataset.k; render(); window.scrollTo(0, 0); },
   grMsQuick(el) {
     const m = el.dataset.m;
