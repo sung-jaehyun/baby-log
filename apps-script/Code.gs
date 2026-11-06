@@ -1,6 +1,7 @@
 /**
  * 아기 기록 앱 - 서버(구글 Apps Script)
- * 이 파일 전체를 Apps Script 편집기의 Code.gs에 붙여넣고, setup 실행 후 "웹 앱"으로 배포하세요.
+ * 처음 설치: 이 파일 전체를 Code.gs에 붙여넣고 setup 실행 후 "웹 앱"으로 배포.
+ * 업그레이드: 붙여넣고 저장 → 배포 관리 → ✏️ → 새 버전 → 배포만(setup 실행하지 않음).
  */
 const TZ = 'Asia/Seoul';
 const API_VERSION = 5;
