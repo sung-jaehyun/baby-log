@@ -418,3 +418,43 @@ html[data-theme="dark"] .ic svg path[fill="#3C3489"], html[data-theme="dark"] .t
   .hrep h2 { font-size: 22px; } .hli, .htbl { font-size: 12.5px; } .hkv { grid-template-columns: repeat(4, 1fr); }
   .hkv > div { background: #F5F1F9 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 }
+
+/* ---------- 5차(출시 심사 반영) ---------- */
+/* 상태 카드: 깸(테마색) · 낮잠(하늘빛 보라) · 밤잠(짙은 남색) · 밤중깸(새벽빛)으로 한눈에 구분 */
+.hero.m-nap { background: linear-gradient(135deg, #8EA2E8, #6C78D2); box-shadow: 0 7px 16px rgba(80,95,190,.3); }
+.hero.m-night { background: linear-gradient(135deg, #3A3488, #262158); box-shadow: 0 7px 16px rgba(30,25,80,.4); }
+.hero.m-wake { background: linear-gradient(135deg, #4B4396, #B07FA8); box-shadow: 0 7px 16px rgba(75,67,150,.35); }
+.hero.m-night .ph.big, .hero.m-wake .ph.big { background: rgba(255,255,255,.78); }
+.fixb { display: inline-block; margin-top: 3px; padding: 4px 10px; min-height: 30px; border-radius: 9px; background: #fff; color: var(--night); font-size: 12px; font-weight: 800; }
+/* 주의 카드 */
+.caution { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; border-radius: 14px; padding: 9px 12px; margin-bottom: 9px; box-shadow: var(--shadow); border-left: 5px solid; }
+.caution .e { font-size: 20px; line-height: 1; flex: none; }
+.caution b { display: block; font-size: 14px; font-weight: 800; }
+.caution small { display: block; font-size: 12px; font-weight: 600; margin-top: 1px; }
+.caution.bad { background: var(--danger-bg); border-color: var(--danger); color: #8E2B28; }
+.caution.warn { background: var(--over-bg); border-color: var(--warn); color: #7A4D10; }
+.caution .dupb { display: flex; gap: 6px; margin-top: 6px; }
+.caution .dupb button { flex: 1; min-height: 38px; border-radius: 10px; background: rgba(255,255,255,.85); font-size: 13px; font-weight: 800; color: #7A4D10; }
+html[data-theme="dark"] .caution.bad { background: #4A2629; color: #FFC9C6; }
+html[data-theme="dark"] .caution.warn { background: #46381F; color: #FFDFA6; }
+html[data-theme="dark"] .caution .dupb button { background: rgba(255,255,255,.12); color: #FFDFA6; }
+/* 체온 빠른 입력 */
+.chips.tq { justify-content: center; margin: 4px 0 6px; }
+.chips.tq .chip { min-width: 52px; }
+/* 저장 버튼 대비(흰 글씨가 잘 읽히게 진한 색) · 손가락 크기 */
+:root { --btn: #7A5FB0; }
+html[data-theme="peach"] { --btn: #C25E3B; } html[data-theme="mint"] { --btn: #2B8463; }
+html[data-theme="sky"] { --btn: #3A77B5; } html[data-theme="lemon"] { --btn: #8A6A0E; } html[data-theme="dark"] { --btn: #6E62C4; }
+.primary { background: var(--btn); }
+.chip { min-height: 40px; } .chip.xs { min-height: 0; }
+.toast .acts button { padding: 12px 0; }
+/* 다크모드 상태 카드: 칸 배경을 카드보다 한 단계 밝게, 보조 글씨 진하게 */
+html[data-theme="dark"] .hero { background: linear-gradient(135deg, #5C51B8, #7A6CD0); }
+html[data-theme="dark"] .hero.m-nap { background: linear-gradient(135deg, #4F63B8, #3E4C9C); }
+html[data-theme="dark"] .hero.m-night { background: linear-gradient(135deg, #2C2770, #1C1946); }
+html[data-theme="dark"] .hero.m-wake { background: linear-gradient(135deg, #3B3480, #7C5578); }
+html[data-theme="dark"] .hero .tile { background: #34324C; color: #F2F0FA; }
+html[data-theme="dark"] .hero .tile .n { color: #D6D2F0; }
+html[data-theme="dark"] .hero .ph.big { background: rgba(255,255,255,.72); }
+html[data-theme="dark"] .hero.m-night .bar2 b { background: #A9A2F0 !important; }
+.caution.dup { padding: 8px 12px; }

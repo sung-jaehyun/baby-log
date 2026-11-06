@@ -4,7 +4,8 @@
 import asyncio, sys, json, base64
 from playwright.async_api import async_playwright
 
-BASE = 'http://localhost:8765/index.html'
+import os
+BASE = os.environ.get('E2E_BASE', 'http://localhost:8765/index.html')
 FAILS = []
 def check(name, ok, detail=''):
     print(('  ✓ ' if ok else '  ✗ ') + name + ('' if ok else f'  → {detail}'))
@@ -317,7 +318,7 @@ async def main():
         leaked = await pg.evaluate("JSON.parse(localStorage.demoDB).recs.filter(r=>'_dk' in r||'_dks' in r||'_local' in r||'_nk' in r).length")
         check('서버로 보내는 기록에 내부 표시값 없음', leaked == 0, leaked)
         await pg.click('[data-act="tab"][data-tab="home"]'); await pg.click('.gear[data-tab="settings"]')
-        check('설정에 서버 버전 표시', '버전 4 최신' in await pg.inner_text('#app'))
+        check('설정에 서버 버전 표시', '버전 5 최신' in await pg.inner_text('#app'))
 
         print('[디자인]')
         await pg.click('[data-act="look"][data-v="dark"]'); await pg.click('[data-act="look"][data-v="gaegu"]')
@@ -336,7 +337,7 @@ async def main():
         n_al = await pg.evaluate("document.querySelectorAll('.alert').length")
         check('알림 여러 개면 원형 시계가 줄어 한 화면 유지(110px 이상)', n_al < 2 or (await pg.evaluate("$('.ccard .clk').offsetHeight") >= 108 and await pg.evaluate("document.documentElement.scrollHeight <= innerHeight + 1 || $('.ccard .clk').offsetHeight <= 112")))
         await pg.set_viewport_size({'width': 384, 'height': 790}); await pg.evaluate("delete S.memos[dkey(Date.now())]; render()")
-        one = await pg.evaluate("[document.documentElement.scrollHeight, innerHeight, $('.ccard .clk').offsetHeight, !!$('.plan'), document.querySelectorAll('.alert').length]")
+        one = await pg.evaluate("[document.documentElement.scrollHeight, innerHeight, $('.ccard .clk').offsetHeight, !!$('.plan'), document.querySelectorAll('.alert').length, [...document.querySelectorAll('.home > *')].map(e=>e.className.split(' ')[0]+':'+e.offsetHeight).join(' '), $('.hero').innerText.replace(/\\n/g,'|')]")
         check('384×790 남은 일정+알림 1개: 스크롤 없이 시계 130px 이상', one[0] <= one[1] + 1 and one[2] >= 130, one)
         await pg.set_viewport_size({'width': 390, 'height': 844}); await pg.evaluate("S.memos[dkey(Date.now())]={text:'병원 다녀옴',by:'아내'}; render()")
         lay = await pg.evaluate("""(()=>{const c=$('.ccard').getBoundingClientRect(), k=$('.ccard .clk').getBoundingClientRect(), l=$('.ccard .leg').getBoundingClientRect();
@@ -526,6 +527,8 @@ async def main():
             out.C = [r.st.next, r.items, r.todo];
             // D: 막수로 합쳐진 수유 → 한 줄 안내도 막수 기준(18:55, 마지막 수유 16:00)
             r = run([night,{type:'sleep',kind:'낮',start:T(16,40),end:T(17,50)},{type:'feed',start:T(16,0),value:150}], T(18,55)); out.D = [r.items, r.todo];
+            // H: 막수(19:25) 뒤 19:50에 한 번 더 먹임, 아직 안 잠 → 지난 시각 막수가 다시 뜨지 않음
+            r = run([night,{type:'sleep',kind:'낮',start:T(17,10),end:T(17,50)},{type:'bath',start:T(19,0)},{type:'feed',start:T(19,25),value:200},{type:'feed',start:T(19,50),value:100}], T(19,51)); out.H = [r.items, r.todo];
             // E: 밤잠 기록을 빠뜨린 다음 날 아침(어제 17:50 낮잠이 마지막) → 일정표 시각
             r = run([{type:'sleep',kind:'낮',start:T(17,10)-86400000,end:T(17,50)-86400000}], T(7,30)); out.E = r.items;
             // F: 수유 간격 −30으로 저장돼도 멈추지 않음
@@ -540,9 +543,16 @@ async def main():
         check('경계B: 낮잠1이 길어져도 낮잠2가 사라지지 않음', any('낮잠2' in x for x in ed['B']), ed['B'])
         C = ed['C']; check('경계C: 목욕 전에 못 끝날 낮잠은 빼고 상태 카드도 밤잠', C[0] == '밤잠' and not any('낮잠' in x for x in C[1]), C)
         D = ed['D']; check('경계D: 한 줄 안내와 남은 일정이 같은 수유 예측(막수로 합침)', not any(x.endswith(' 수유') for x in D[0]) and ('분유 시간이 지났어요' not in D[1]), D)
+        check('경계H: 막수 뒤 추가 수유해도 지난 막수·"분유 시간 지났어요"가 다시 안 뜸', not any('막수' in x for x in ed['H'][0]) and '분유' not in ed['H'][1], ed['H'])
         check('경계E: 밤잠 기록이 빠진 아침엔 일정표 시각으로 낮잠 표시', any('08:45 낮잠1' == x for x in ed['E']), ed['E'])
         check('경계F: 수유 간격이 이상한 값이어도 멈추지 않음', ed['F'][0] and ed['F'][1] < 30, ed['F'])
         G = ed['G']; bi = [x.split(' ',1)[1] for x in G].index('밤잠'); check('경계G: 밤잠 뒤 일정표 수유(꿈수)는 남은 일정에 없음', bi == len(G) - 1, G)
+        # 홈 '약' 빠른 기록(1차부터 있던 오류: 창을 닫은 뒤 양 칸을 읽어 저장 실패)
+        await p2.click('#tabs [data-tab="home"]'); m0 = await p2.evaluate("live().filter(r=>r.type==='med').length")
+        await p2.click('[data-act="med"]'); await p2.fill('#mn', '해열제'); await p2.fill('#ma', '2.5ml'); await p2.click('#save'); await confirm_if_asked(p2)
+        mr = await p2.evaluate("(()=>{ const l=live().filter(r=>r.type==='med'); return [l.length, l.length ? l[l.length-1].d1 : '', l.length ? l[l.length-1].d2 : '']; })()")
+        check('홈 약 기록 저장(이름·양)', mr == [m0 + 1, '해열제', '2.5ml'], mr)
+        await p2.evaluate('closeToast()')
         # 저장 안내
         await p2.click('#tabs [data-tab="home"]'); await p2.click('[data-act="feed"]'); await p2.click('.sheet .primary'); await p2.wait_for_selector('#toast')
         tt = await p2.inner_text('#toast')
@@ -569,6 +579,69 @@ async def main():
         await p2.click('#tabs [data-tab="home"]'); await p2.wait_for_timeout(300); await p2.go_back(); await p2.wait_for_timeout(500)
         check('홈에서 뒤로가기는 앱 종료(이전 페이지로)', '/tests/' in p2.url, p2.url)
         check('화면 오류 없음(4차)', not e2, e2)
+
+        print('[5차: 출시 심사 반영]')
+        ctx5 = await b.new_context(viewport={'width': 390, 'height': 844}); p5 = await ctx5.new_page(); e5 = []
+        p5.on('pageerror', lambda e: e5.append(str(e)))
+        await p5.goto(BASE + '#s=demo'); await login(p5)
+        ev = lambda js: p5.evaluate(js)
+        # 바뀐 칸만 보내기
+        fid = await ev("addRec({type:'feed',start:Date.now()-40*MIN,value:120}).id")
+        await settle(p5)
+        await p5.evaluate(f"editSheet('{fid}')")
+        await ev(f"S.recs['{fid}'] = Object.assign({{}}, S.recs['{fid}'], {{memo:'아내가 쓴 메모'}})")   # 창을 연 사이 다른 가족이 메모를 고쳐 동기화됨
+        await p5.fill('#ev', '140'); await p5.click('#save'); await p5.wait_for_timeout(200)
+        q = await ev(f"JSON.stringify(S.queue.filter(o=>o.id==='{fid}').map(o=>o.rec))")
+        check('수정 창은 바꾼 칸(양)만 보냄 → 다른 가족이 고친 메모 유지', '140' in q and 'memo' not in q and 'start' not in q and await ev(f"S.recs['{fid}'].memo") == '아내가 쓴 메모', q)
+        await settle(p5)
+        await p5.click('#tabs [data-tab="day"]'); await p5.fill('#daymemo', '테스트 메모'); await p5.evaluate("$('#daymemo').blur()"); await p5.wait_for_timeout(200)
+        check('하루 메모는 마지막으로 본 내용(base)을 함께 보냄', await ev("S.queue.some(o=>o.op==='memo' && 'base' in o)"))
+        await settle(p5); await p5.click('#tabs [data-tab="home"]')
+        # 주의 카드
+        await ev("addRec({type:'temp',start:Date.now()-20*MIN,value:38.4})")
+        t = await ev("[...document.querySelectorAll('.caution.bad')].map(e=>e.innerText).join('|')")
+        check('고열 기록 → 홈 상태 카드 아래 빨간 주의 카드', '38.4' in t, t)
+        await ev("addRec({type:'temp',start:Date.now()-5*MIN,value:36.9})")
+        check('다시 재서 정상이면 주의 카드 사라짐', '℃' not in await ev("[...document.querySelectorAll('.caution')].map(e=>e.innerText).join('|')"))
+        await ev("addRec({type:'diaper',start:Date.now()-2*HOUR,d1:'대변',d2:'흰색·회색'})")
+        check('흰색·회색 변 → 소아과 상담 주의 카드', '소아과' in await ev("$('.caution.bad') ? $('.caution.bad').innerText : ''"))
+        # 중복 기록
+        await ev("addRec({type:'feed',start:Date.now()-2*MIN,value:150,by:'아내'}); addRec({type:'feed',start:Date.now()-MIN,value:150,by:'재현'})")
+        check('다른 가족이 3분 안에 같은 분유 → 중복 안내', await ev("!!$('.caution.dup')"))
+        n0 = await ev("live().filter(r=>r.type==='feed').length")
+        await p5.click('.caution.dup [data-act="dupDel"]'); await p5.wait_for_timeout(150)
+        check('"하나 지우기" → 늦게 만든 기록 하나만 지움', await ev("live().filter(r=>r.type==='feed').length") == n0 - 1 and not await ev("!!$('.caution.dup')"))
+        await ev("addRec({type:'diaper',start:Date.now()-MIN,d1:'소변',by:'아내'}); addRec({type:'diaper',start:Date.now(),d1:'소변',by:'장모님'})")
+        await p5.click('.caution.dup [data-act="dupOk"]'); await p5.wait_for_timeout(150)
+        check('"둘 다 맞아요" → 안내 사라지고 다시 안 뜸', not await ev("!!$('.caution.dup')"))
+        # 체온 빠른 입력
+        await p5.click('[data-act="temp"]'); await p5.click('.chips.tq [data-v="38.5"]')
+        check('체온: 38.5 칩 한 번에 입력', '38.5' in await p5.inner_text('#tv')); await ev('closeSheet()')
+        # 상태 카드 구분·단위·잊은 깸
+        await ev("addRec({type:'sleep',start:Date.now()-200*MIN,kind:'낮'}); render()")
+        hc = await ev("$('.hero').className + '|' + $('.hero').innerText")
+        check('낮잠 중 상태 카드는 별도 색(m-nap)', 'm-nap' in hc, hc[:60])
+        check('시간 단위 표시(3시간 20분)', '3시간' in hc and '분' in hc, hc)
+        check('너무 오래 자는 중 → "깬 기록 잊으셨나요" + 깬 시각 입력 버튼', '잊으셨나요' in hc and await ev("!!$('.hero .fixb[data-act=\"edit\"]')"))
+        await ev("S.recs[openSleep().id].deleted = true; dirty(); render()")
+        # 새벽 깸 → 아침 기상
+        r5 = await ev("""(()=>{ const real=Date.now, k=dkey(real()), t=at(k,'05:10'); Date.now=()=>t;
+          try { Object.values(S.recs).forEach(r=>{ if(r.type==='sleep' && r.start>at(addDays(k,-1),'12:00')) r.deleted=true; }); dirty();
+            const r=addRec({type:'sleep',start:at(addDays(k,-1),'19:30'),end:at(k,'05:05'),kind:'밤'});
+            const m1=statusInfo().mode; render(); const btn=!!$('.hero [data-act="morningWake"]');
+            updateRec(r.id,{d1:'기상'}); const m2=statusInfo().mode; r.deleted=true; dirty();
+            Date.now=()=>at(k,'09:00'); const nn=statusCard(statusInfo()).includes('어젯밤 잠 기록이 없어요');
+            return [m1,btn,m2,nn]; } finally { Date.now=real; dirty(); render(); } })()""")
+        check('새벽 5시 깸은 밤중깸 + "아침 기상이에요" 버튼', r5[0] == 'nightwake' and r5[1], r5)
+        check('"아침 기상이에요" → 깸 상태로 오늘 일정 계산', r5[2] == 'awake', r5)
+        check('어젯밤 잠 기록이 없으면 "밤잠 넣기" 안내', r5[3], r5)
+        # 저장 실패·잠금
+        lf = await ev("""(()=>{ const o=Storage.prototype.setItem; Storage.prototype.setItem=()=>{throw new Error('full')};
+          LS.set('x',1); render(); const t=document.body.innerText.includes('이 휴대폰에 저장이 안 되고'); Storage.prototype.setItem=o; LS.set('x',1); render();
+          return [t, document.body.innerText.includes('이 휴대폰에 저장이 안 되고')]; })()""")
+        check('휴대폰 저장 실패 → 빨간 안내, 다시 되면 사라짐', lf == [True, False], lf)
+        check('서버 잠금(locked)은 로그아웃 사유가 아님', await ev("!isAuthErr({code:'locked', pinUsed:S.auth.pin})"))
+        check('화면 오류 없음(5차)', not e5, e5)
         await b.close()
     print('\n결과:', '모두 통과' if not FAILS else f'{len(FAILS)}건 실패: ' + ', '.join(FAILS))
     sys.exit(1 if FAILS else 0)

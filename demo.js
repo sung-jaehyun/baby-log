@@ -105,7 +105,7 @@ const DEMO = (() => {
     }
     if (['setSettings', 'savePlan', 'applyPlan', 'saveUsers'].includes(action)) d.rev++;
     save(d);
-    return { ok: true, api: 4, user: u.name, now, rev: d.rev, reset: d.resetAt || 0, resetScope: d.resetScope || '', data: JSON.parse(JSON.stringify(out)) };
+    return { ok: true, api: 5, user: u.name, now, rev: d.rev, reset: d.resetAt || 0, resetScope: d.resetScope || '', data: JSON.parse(JSON.stringify(out)) };
   }
   return { call };
 })();

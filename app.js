@@ -7,7 +7,12 @@ const $ = (s, el = document) => el.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const LS = {
   get(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
-  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} },
+  // 저장 공간이 꽉 차는 등으로 휴대폰 저장이 실패하면 표시(홈 빨간 띠). 다음에 성공하면 지움
+  failAt: 0, fails: {},   // 항목(key)마다 실패를 따로 기억: 큰 캐시가 실패했는데 작은 저장 성공으로 안내가 꺼지지 않게
+  set(k, v) {
+    try { localStorage.setItem(k, JSON.stringify(v)); if (LS.fails[k]) { delete LS.fails[k]; LS.failAt = Object.keys(LS.fails).length ? LS.failAt : 0; } }
+    catch (e) { LS.fails[k] = 1; if (!LS.failAt) { LS.failAt = Date.now(); setTimeout(() => { try { bgRender(); } catch (x) {} }, 0); } }
+  },
   del(k) { try { localStorage.removeItem(k); } catch (e) {} },
 };
 
@@ -21,6 +26,8 @@ const toMin = (s) => { const [h, m] = String(s || '0:0').split(':').map(Number);
 const minOfDay = (ms) => { const d = new Date(ms); return d.getHours() * 60 + d.getMinutes(); };
 const at = (key, s) => { const [y, m, d] = key.split('-').map(Number); const mm = toMin(s); return new Date(y, m - 1, d, Math.floor(mm / 60), mm % 60).getTime(); };
 const minTxt = (m) => { m = Math.max(0, Math.round(m)); const h = Math.floor(m / 60), r = m % 60; return h ? (r ? `${h}시간 ${r}분` : `${h}시간`) : `${r}분`; };
+/* 상태 카드 큰 숫자용: 1시간 58분(단위는 작게) */
+const durHtml = (m) => { m = Math.max(0, Math.round(m)); const h = Math.floor(m / 60), r = m % 60; return h ? `${h}<small>시간</small> ${r}<small>분</small>` : `${r}<small>분</small>`; };
 const minShort = (m) => { m = Math.max(0, Math.round(m)); return `${Math.floor(m / 60)}:${pad(m % 60)}`; };
 const WEEK = ['일', '월', '화', '수', '목', '금', '토'];
 const dayLabel = (key) => { const [y, m, d] = key.split('-').map(Number); return `${m}월 ${d}일 (${WEEK[new Date(y, m - 1, d).getDay()]})`; };
@@ -148,7 +155,10 @@ function wipedRec(id) {
 }
 const errMsg = (e) => (e.server ? e.message : '연결이 안 돼요. 잠시 후 다시 해주세요.');
 /* 지금 쓰는 PIN으로 보낸 요청이 거절됐을 때만 로그아웃(내가 PIN을 바꾸는 중 엇갈린 요청은 무시) */
-const isAuthErr = (e) => (e.code === 'pin' || e.code === 'locked') && S.auth && e.pinUsed === S.auth.pin && !S.pinChanging;
+const isAuthErr = (e) => e.code === 'pin' && S.auth && e.pinUsed === S.auth.pin && !S.pinChanging;
+/* 서버가 잠시 잠김(누군가 PIN을 여러 번 틀림): 이미 로그인한 휴대폰은 로그아웃하지 않고, 기록은 대기열에 두었다가 풀리면 올린다 */
+let lockedNoted = 0;
+function lockedNote(e) { if (e && e.code === 'locked' && Date.now() - lockedNoted > 10 * MIN) { lockedNoted = Date.now(); note('서버가 잠시 잠겼어요(PIN 여러 번 틀림). 기록은 이 폰에 두었다가 풀리면 올려요'); } }
 
 /* 서버 사본은, 요청을 보낸 뒤에 이 기기에서 고친 기록을 덮어쓰지 않는다(늦게 도착한 옛 응답 방지) */
 function mergeRecs(list, sentAt = 0) {
@@ -193,6 +203,7 @@ async function sync(full) {
     if (!S.auth) return;
     if ((S.wipeN || 0) !== wipe0) return;   // 응답 도중 기록 지우기를 알게 됨: 이 응답은 버리고 새로 전체를 받음
     lastSync = Date.now();
+    if (j.api && j.api < 5 && j.api >= 3 && S.auth.url !== 'demo' && !S.apiWarned) { S.apiWarned = true; note('서버 코드를 새 버전으로 배포해주세요 (PIN 보안·메모 보호)'); }
     if ((!j.api || j.api < 3) && S.auth.url !== 'demo' && !S.apiWarned) { S.apiWarned = true; note('서버 코드를 새 버전으로 배포해주세요 (성장 기록 보관)'); }
     if (!isFull && j.data.same) { S.rev = j.rev; return; }
     if (isFull) {
@@ -208,7 +219,7 @@ async function sync(full) {
     saveCache();
     bgRender();
   } catch (e) {
-    if (isAuthErr(e)) authFailed(e.code === 'locked' ? e.message : null);
+    if (isAuthErr(e)) authFailed(null); else lockedNote(e);
   } finally { syncing = false; }
 }
 /* 화면을 막지 않고, 최근 동기화가 오래됐으면 조용히 새로 받아온다 */
@@ -250,11 +261,12 @@ async function flush() {
       let j;
       const wipe0 = S.wipeN || 0;
       try {
-        j = await call('batch', { now: Date.now(), ops: ops.map((o) => ({ op: o.op, id: o.id, rec: o.rec, text: o.text, at: o.at })) });
+        j = await call('batch', { now: Date.now(), ops: ops.map((o) => ({ op: o.op, id: o.id, rec: o.rec, text: o.text, base: o.base, at: o.at })) });
       } catch (e) {
         ops.forEach((o) => { o.sending = false; });
         saveQueue();
-        if (isAuthErr(e)) authFailed(e.code === 'locked' ? e.message : null);
+        if (isAuthErr(e)) authFailed(null);
+        else if (e.code === 'locked') { lockedNote(e); scheduleFlush(5 * MIN); }
         else {
           if (e.code === 'error') note('저장이 안 되고 있어요: ' + e.message);
           retryDelay = Math.min((retryDelay || 4000) * 2, 120000); scheduleFlush(retryDelay);
@@ -418,7 +430,7 @@ function statusInfo() {
   if (!last) return { ...base, mode: 'nodata' };
   const el = (now - last.end) / MIN;
   // 밤잠 뒤 깸: 계획 기상 1시간 이내면 아침 기상으로 보고 낮 일정 안내, 그보다 이르면 밤중 깸
-  if (last.kind === '밤' && isNightTime(now) && at(addDays(nightOf(last), 1), P.raw.wake) - last.end > 60 * MIN) return { ...base, mode: 'nightwake', el, last };
+  if (last.kind === '밤' && last.d1 !== '기상' && isNightTime(now) && at(addDays(nightOf(last), 1), P.raw.wake) - last.end > 60 * MIN) return { ...base, mode: 'nightwake', el, last };
   const n = last.kind === '밤' ? 1 : dayNaps(today).filter((r) => r.end && r.end <= last.end && countsAsNap(r)).length + 1;
   let target, pred, next;
   const bedAt = at(today, P.raw.bed), lastWW = P.ww[P.ww.length - 1] || 120;
@@ -574,7 +586,7 @@ function viewHome() {
   const sm = daySummary(today), ns = nightStats(mid ? today : yest);
   const open = openSleep();
   const last = live().filter((r) => !GROWTH_ONLY.has(r.type)).pop();
-  return `<div class="home">${header()}${statusCard(st)}
+  return `<div class="home">${header()}${statusCard(st)}${cautionCards()}
   <button class="card ccard" data-act="tab" data-tab="day"><div class="clk">${clockSvg(today, sm, true)}</div>
     <div class="leg"><span><i style="background:var(--feed)"></i>수유</span><b>${sm.feedN}회 · ${sm.feedMl}ml</b>
       <span><i style="background:var(--nap)"></i>낮잠</span><b>${sm.napN}회 · ${minShort(sm.napMin)}</b>
@@ -610,33 +622,42 @@ function statusCard(st) {
     ${pct == null ? '' : `<div class="bar2"><b style="width:${pct.toFixed(1)}%;background:${color}"></b></div>`}<div class="n">${n}</div></div>`;
   const none = (cls, ico, name, msg) => `<div class="tile t${cls} empty-t"><div class="hd"><i>${ART.icons[ico]}</i>${name}</div><div class="v">${msg}</div></div>`;
   const fi = st.feedInfo;
-  const feedT = fi ? tile('F', 'feed', '수유한 지', minShort(fi.el), fi.pct, fi.color === 'var(--nap)' ? 'var(--feed)' : fi.color, `다음 ${esc((nextFeed(st) || { n: '수유' }).n === '막수' ? '막수' : '수유')} ${hm((nextFeed(st) || { t: fi.pred }).t)}쯤`)
+  const feedT = fi ? tile('F', 'feed', '수유한 지', durHtml(fi.el), fi.pct, fi.color === 'var(--nap)' ? 'var(--feed)' : fi.color, `다음 ${esc((nextFeed(st) || { n: '수유' }).n === '막수' ? '막수' : '수유')} ${hm((nextFeed(st) || { t: fi.pred }).t)}쯤`)
     : none('F', 'feed', '수유', '기록이 아직 없어요');
-  const card = (title, tag, sub, sleepT) => `<div class="hero"><div class="hbody">${phBig}<div class="hright">
+  const card = (title, tag, sub, sleepT, cls = '') => `<div class="hero ${cls}"><div class="hbody">${phBig}<div class="hright">
       <div><div class="st">${title}${tag ? `<span class="tag2">${tag}</span>` : ''}</div><div class="st-sub">${sub}</div></div>
       <div class="tiles">${sleepT}${feedT}</div></div></div></div>`;
   const who = esc(josa(nm, '은', '는'));
   if (st.mode === 'night') {
-    return card(`${who} 밤잠 자는 중`, '🌙 밤잠', `${hm(st.open.start)} 잠듦 · 오늘 밤 ${minTxt(st.tot)}`,
-      tile('S', 'sleep', '잠든 지', minShort(st.el), st.pct, 'var(--night)', `기상 목표 ${hm(st.wakeAt)}`));
+    // 기상 목표가 1시간 반 넘게 지났는데 아직 자는 중: 깬 기록을 잊었을 수 있음
+    const forgot = Date.now() > st.wakeAt + 90 * MIN;
+    return card(`${who} 밤잠 자는 중`, '🌙 밤잠', forgot ? forgotLine(st.open) : `${hm(st.open.start)} 잠듦 · 오늘 밤 ${minTxt(st.tot)}`,
+      tile('S', 'sleep', '잠든 지', durHtml(st.el), st.pct, 'var(--night)', `기상 목표 ${hm(st.wakeAt)}`), 'm-night');
   }
   if (st.mode === 'nap') {
-    return card(`${who} 낮잠${st.idx} 자는 중`, '🌙 낮잠', `${hm(st.open.start)} 잠듦${st.target ? ` · ${st.max ? `최대 ${minTxt(st.max)}` : `목표 ${minTxt(st.target)}`}` : ''}`,
-      st.target ? tile('S', 'sleep', '잠든 지', minShort(st.el), st.pct, st.color, `${hm(st.pred)}쯤 깸 예상`)
-        : tile('S', 'sleep', '잠든 지', minShort(st.el), null, '', '일정표에 없는 잠'));
+    // 목표(최대) 길이보다 1시간 넘게 자는 중: 깬 기록을 잊었을 수 있음(일정표에 없는 잠은 3시간)
+    const forgot = st.el > (st.target ? (st.max || st.target) + 60 : 180);
+    return card(`${who} 낮잠${st.idx} 자는 중`, '💤 낮잠', forgot ? forgotLine(st.open) : `${hm(st.open.start)} 잠듦${st.target ? ` · ${st.max ? `최대 ${minTxt(st.max)}` : `목표 ${minTxt(st.target)}`}` : ''}`,
+      st.target ? tile('S', 'sleep', '잠든 지', durHtml(st.el), st.pct, st.color, `${hm(st.pred)}쯤 깸 예상`)
+        : tile('S', 'sleep', '잠든 지', durHtml(st.el), null, '', '일정표에 없는 잠'), 'm-nap');
   }
   if (st.mode === 'nodata' && S.loading) {
     return `<div class="hero"><div class="hrow">${ph}<div style="flex:1"><div class="st">기록을 불러오는 중…</div><div class="bar2" style="background:rgba(255,255,255,.3)"><b class="loadbar"></b></div></div></div></div>`;
   }
   if (st.mode === 'nodata') return card('반가워요', '', '잠·수유를 기록하면 다음 할 일을 계산해드려요', none('S', 'sleep', '잠', '기록이 아직 없어요'));
   if (st.mode === 'nightwake') {
-    return card('밤중에 깼어요', '🌙 밤중', `${hm(st.last.end)} 깸 · 다시 재우면 "잠 시작"`,
-      tile('S', 'wake', '잠에서 깬 지', minShort(st.el), null, '', '다시 재우면 잠 시작'));
+    // 일정표 기상 3시간 전부터(새벽)만 '아침 기상' 버튼: 아이가 그대로 하루를 시작하면 눌러서 오늘 일정을 계산
+    const morning = at(addDays(nightOf(st.last), 1), st.P.raw.wake) - Date.now() < 3 * HOUR;
+    return card('밤중에 깼어요', '🌗 밤중', morning ? `${hm(st.last.end)} 깸 · <button class="fixb" data-act="morningWake" data-id="${esc(st.last.id)}">아침 기상이에요</button>` : `${hm(st.last.end)} 깸 · 다시 재우면 "잠 시작"`,
+      tile('S', 'wake', '잠에서 깬 지', durHtml(st.el), null, '', '다시 재우면 잠 시작'), 'm-wake');
   }
-  return card(`${who} 지금 깨어 있어요`, '☀️ 깸', todoLine(st),
-    tile('S', 'sleep', '잠에서 깬 지', minShort(st.el), st.pct, st.color === 'var(--nap)' ? 'var(--accent)' : st.color, `${st.next} ${hm(st.pred)}쯤`));
+  // 어젯밤 잠 기록이 없음(마지막 잠이 어제 낮잠): 밤잠을 넣어야 오늘 일정을 계산할 수 있음
+  const noNight = st.lastKind === '낮' && st.lastEnd && dkey(st.lastEnd) !== dkey(Date.now());
+  return card(`${who} 지금 깨어 있어요`, '☀️ 깸', noNight ? `<span class="do over">어젯밤 잠 기록이 없어요</span> <button class="fixb" data-act="addNight">밤잠 넣기</button>` : todoLine(st),
+    tile('S', 'sleep', '잠에서 깬 지', durHtml(st.el), st.pct, st.color === 'var(--nap)' ? 'var(--accent)' : st.color, `${st.next} ${hm(st.pred)}쯤`));
 }
 
+function forgotLine(open) { return `<span class="do over">혹시 깬 기록을 잊으셨나요?</span> <button class="fixb" data-act="edit" data-id="${esc(open.id)}">깬 시각 입력</button>`; }
 /* 깨어 있을 때 상태 카드 제목 아래 한 줄: 다음 잠·수유 중 먼저 오는 것을 말로 (15분 이내면 '곧', 지나면 '지났어요') */
 function todoLine(st) {
   const now = Date.now(), c = [{ w: st.next === '밤잠' ? '밤잠' : '낮잠', l: st.next, t: st.pred }];
@@ -706,7 +727,7 @@ function dayForecast(st) {
   if (st.mode === 'awake' && st.next === '밤잠' && !stale) bed = st.pred;   // 상태 카드와 같은 시각
   const bath = P.bath != null && !bathDone ? bed - (P.bed - P.bath) * MIN : null;
   let bedFeed = lf ? { t: bed - (P.bed - lf.t) * MIN, n: lf.l } : null;
-  if (bedFeed && lastFeed && lastFeed.start >= bedFeed.t - 60 * MIN && lastFeed.start <= bed) bedFeed = null;   // 이미 막수 먹음
+  if (bedFeed && lastFeed && lastFeed.start >= bedFeed.t - 60 * MIN) bedFeed = null;   // 막수 시각 1시간 전 이후에 먹었으면 막수는 끝(그 뒤 추가 수유도 포함)
   // 목욕(없으면 막수, 그것도 없으면 밤잠 30분 전)까지 못 끝나는 낮잠은 뺀다(첫 '바로 다음' 낮잠은 지났어도 유지)
   const cutoff = bath || (bedFeed && bedFeed.t) || bed - 30 * MIN;
   while (naps.length && naps[naps.length - 1].t + 20 * MIN > cutoff) naps.pop();
@@ -754,6 +775,45 @@ function lastCard(r) {
   return `<button class="card last${just ? ' just' : ''}" data-act="edit" data-id="${esc(r.id)}">${recIcon(r)}<div style="min-width:0"><div class="k">${just ? '✓ 방금 저장' : '마지막 기록'}</div>
     <div class="v">${esc(x.t)} · ${hm(r.start)}</div></div><span class="ed">고치기 ›</span></button>`;
 }
+/* 홈 주의 카드(상태 카드 바로 아래): 저장 실패 · 고열/미열 · 주의 변 색 · 같은 기록 중복 */
+function cautionCards() {
+  const now = Date.now(), out = [];
+  if (LS.failAt) out.push(['bad', '⚠️', '이 휴대폰에 저장이 안 되고 있어요', '저장 공간을 확인해주세요 · 인터넷이 연결돼 있으면 서버에는 올라가요', '']);
+  if (S.failed.length) out.push(['bad', '⚠️', `저장 못 한 기록 ${S.failed.length}건`, '설정에서 다시 시도하거나 버릴 수 있어요', `data-act="tab" data-tab="settings"`]);
+  const t = lastOf('temp');
+  if (t && now - t.start < 24 * HOUR) {
+    const v = Number(t.value), hi = Number(set('tempHigh')), wa = Number(set('tempWarn'));
+    const med = live().filter((r) => r.type === 'med' && r.start > now - 12 * HOUR).pop();
+    const m = med ? ` · 약 ${esc(med.d1)} ${hm(med.start)}` : '';
+    if (v >= hi) out.push(['bad', '🌡️', `열 ${v.toFixed(1)}℃ · ${hm(t.start)}`, `1~2시간 뒤 다시 재주세요${m}`, `data-act="temp"`]);
+    else if (v >= wa) out.push(['warn', '🌡️', `미열 ${v.toFixed(1)}℃ · ${hm(t.start)}`, `조금 뒤 다시 재주세요${m}`, `data-act="temp"`]);
+  }
+  const p = live().filter((r) => r.type === 'diaper' && WARN_COLORS.includes(r.d2) && now - r.start < 48 * HOUR).pop();
+  if (p) {
+    const white = p.d2 === '흰색·회색';
+    out.push([white ? 'bad' : 'warn', '💩', `${p.d2} 변 · ${dkey(p.start) === dkey(now) ? '' : '어제 '}${hm(p.start)}`, white ? '소아과에 바로 상담해주세요(사진·기저귀 챙기기)' : '계속되면 소아과 상담', `data-act="edit" data-id="${esc(p.id)}"`]);
+  }
+  let html = out.map(([c, e, b, sm, act]) => `<button class="caution ${c}" ${act}><span class="e">${e}</span><span><b>${esc(b)}</b><small>${sm}</small></span></button>`).join('');
+  dupPairs().forEach(([a, b, k]) => {
+    const x = recText(b);
+    html += `<div class="caution warn dup"><span class="e">👀</span><span><b>${esc(x.t)} ${hm(a.start)}·${hm(b.start)} 두 번 기록됐어요</b><small>${esc(a.by)}·${esc(b.by)} · 같은 거면 하나를 지워주세요</small>
+      <span class="dupb"><button data-act="dupDel" data-id="${esc(b.id)}">하나 지우기</button><button data-act="dupOk" data-k="${esc(k)}">둘 다 맞아요</button></span></span></div>`;
+  });
+  return html;
+}
+/* 서로 다른 가족이 3분 안에 같은 종류(분유·기저귀)를 기록한 쌍. 늦게 만든 쪽(b)을 지우기 후보로 */
+function dupPairs() {
+  const now = Date.now(), ok = new Set(LS.get('dupOk', [])), out = [];
+  const list = live().filter((r) => (r.type === 'feed' || r.type === 'diaper') && now - r.start < 6 * HOUR);
+  for (let i = 0; i < list.length; i++) for (let j = i + 1; j < list.length; j++) {
+    const a = list[i], b = list[j];
+    if (a.type !== b.type || a.by === b.by || Math.abs(a.start - b.start) > 3 * MIN) continue;
+    const [x, y] = (a.created || 0) <= (b.created || 0) ? [a, b] : [b, a];
+    const k = [x.id, y.id].sort().join('|');
+    if (!ok.has(k)) out.push([x, y, k]);
+  }
+  return out.slice(0, 2);
+}
 /* 홈 알림: 기념일(오늘·내일), 지금 맞을 접종·검진, 오늘 하루 메모만 */
 function homeAlerts() {
   const out = [];
@@ -788,14 +848,14 @@ function viewDay() {
     <div class="legend"><span><i style="background:var(--night)"></i>밤잠</span><span><i style="background:var(--nap)"></i>낮잠</span>
     <span><i style="background:var(--feed);height:3px"></i>수유</span><span><i style="background:var(--bath);height:3px"></i>목욕</span></div></div>
   <div class="sharebar"><button class="pill" data-act="shareDay">📤 이 날 요약 공유</button></div>
-  <div class="sum4">${tileS('feed', 't-feed', '수유', `${sm.feedN}회·${sm.feedMl}`)}${tileS('sleep', 't-sleep', '낮잠', `${sm.napN}회·${minShort(sm.napMin)}`)}
-    ${tileS('sleep', 't-sleep', `밤잠${ns.count > 1 ? ` (최장 ${minShort(ns.longest)})` : ''}`, ns.tot ? minShort(ns.tot) : '-')}${tileS('diaper', 't-diaper', '기저귀', `소${sm.pee}·대${sm.poo}`)}</div>
+  <div class="sum4">${tileS('feed', 't-feed', '수유', `${sm.feedN}회·${sm.feedMl}`)}${tileS('sleep', 't-sleep', '낮잠', `${sm.napN}회·${minTxt(sm.napMin)}`)}
+    ${tileS('sleep', 't-sleep', `밤잠${ns.count > 1 ? ` (최장 ${minTxt(ns.longest)})` : ''}`, ns.tot ? minTxt(ns.tot) : '-')}${tileS('diaper', 't-diaper', '기저귀', `소${sm.pee}·대${sm.poo}`)}</div>
   <div class="card"><div class="h">계획 대비<span>${esc(planFor(key).name)} 일정</span></div>${compareList(key)}</div>
   <div class="card list"><div class="h">기록 전체 · ${recs.length}건<button class="chip add xs" data-act="addPast">＋ 기록 추가</button></div>
     ${recs.length ? shown.map(recItem).join('') : '<div class="empty">기록이 없어요</div>'}
     ${recs.length > 5 ? `<button class="more" data-act="dayMore" data-k="dayAll">${S.dayAll ? '접기 ▴' : `${recs.length - 5}건 더 보기 ▾`}</button>` : ''}</div>
   <div class="card"><div class="h">한 줄 메모</div>
-    <input id="daymemo" class="memo-in" maxlength="120" placeholder="오늘 있었던 일을 한 줄로 남겨보세요" value="${esc(memo ? memo.text : '')}" data-key="${key}"></div>`;
+    <input id="daymemo" class="memo-in" maxlength="120" placeholder="오늘 있었던 일을 한 줄로 남겨보세요" value="${esc(memo ? memo.text : '')}" data-base="${esc(memo ? memo.text : '')}" data-key="${key}"></div>`;
 }
 
 /* 24시간 원형 시계. mini = 홈 화면용(글자 작게, 크기는 카드에 맞춤) */
@@ -1173,10 +1233,10 @@ function viewSettings() {
     <div class="grp" style="padding:12px 14px"><div class="lbl" style="margin-bottom:8px">${esc(S.failed[0].err || '')}</div>
     <div class="inline"><button class="chip on" data-act="retryFailed">다시 시도</button><button class="chip danger" data-act="dropFailed">버리기</button></div></div>` : ''}
   <div class="gh">가족 · 이 기기</div>
-  <div class="grp">${row('가족 · PIN 관리', `${S.users.filter((u) => u.active).length}명`, 'setUsers')}
+  <div class="grp">${isAdmin() ? row('가족 · PIN 관리', `${S.users.filter((u) => u.active).length}명`, 'setUsers') : `<div class="sb"><span class="k">가족<small>PIN 관리는 관리자(${esc((S.users[0] || {}).name || '')})만</small></span><span class="v">${S.users.filter((u) => u.active).length}명</span></div>`}
     ${row('내 PIN 바꾸기', '', 'changePin')}
     ${S.queue.length ? `<div class="sb"><span class="k">올라가기 기다리는 기록</span><span class="v">${S.queue.length}건</span></div>` : ''}
-    <button class="sb" data-act="resync"><span class="k">서버<small>${S.auth.url === 'demo' ? '데모 모드' : '구글 시트 연결됨'} · 버전 ${!S.api ? '확인 중' : S.api >= 4 ? `${S.api} 최신` : `${S.api} (새 버전 배포 필요)`}</small></span><span class="v" style="color:var(--ink)">새로고침</span></button>
+    <button class="sb" data-act="resync"><span class="k">서버<small>${S.auth.url === 'demo' ? '데모 모드' : '구글 시트 연결됨'} · 버전 ${!S.api ? '확인 중' : S.api >= 5 ? `${S.api} 최신` : `${S.api} (새 버전 배포 필요)`}</small></span><span class="v" style="color:var(--ink)">새로고침</span></button>
     ${row('변경 기록', '', 'setLog')}
     <button class="sb" data-act="logout"><span class="k danger">로그아웃</span></button></div>
   ${isAdmin() ? `<div class="gh">관리자</div><div class="grp"><button class="sb" data-act="setReset"><span class="k danger">기록 지우기<small>연습 기록 정리용 · 지우기 전에 시트에 백업해요</small></span><span class="ar">›</span></button></div>` : ''}
@@ -1535,8 +1595,11 @@ function addRec(r) {
   enqueue({ op: 'add', id: rec.id, rec: send });
   return rec;
 }
-function updateRec(id, patch) {
+/* base(창을 열 때의 기록)를 주면 실제로 바꾼 칸만 보낸다: 그 사이 다른 가족이 고친 칸을 덮어쓰지 않게 */
+const sameVal = (a, b) => (a ?? '') === (b ?? '') || (a != null && b != null && a !== '' && b !== '' && Number(a) === Number(b));
+function updateRec(id, patch, base) {
   const r = S.recs[id]; if (!r) return;
+  if (base) { patch = Object.fromEntries(Object.entries(patch).filter(([k, v]) => !sameVal(v, base[k]))); if (!Object.keys(patch).length) return; }
   Object.assign(r, patch, { updated: Date.now(), _local: Date.now() }); dirty(); render(); saveCache();
   enqueue({ op: 'update', id, rec: { ...patch } });
 }
@@ -1618,6 +1681,13 @@ const ACTIONS = {
   feed() { quickSync(); feedSheet(); },
   diaper() { quickSync(); diaperSheet(); },
   temp() { tempSheet(); },
+  morningWake(el) { updateRec(el.dataset.id, { d1: '기상' }); note('아침 기상으로 보고 오늘 일정을 계산해요'); },
+  addNight() {
+    const today = dkey(Date.now()), y = addDays(today, -1), P = planFor(today);
+    editSheet({ type: 'sleep', start: at(y, planFor(y).raw.bed), end: Math.min(Date.now(), at(today, P.raw.wake)), kind: '밤' });
+  },
+  dupDel(el) { const r = S.recs[el.dataset.id]; if (r) { removeRec(r.id); note('중복 기록 하나를 지웠어요'); } },
+  dupOk(el) { const l = LS.get('dupOk', []); l.push(el.dataset.k); LS.set('dupOk', l.slice(-50)); render(); },
   med() { medSheet(); },
   memo() { memoSheet(); },
   food() { foodSheet(); },
@@ -1803,6 +1873,7 @@ function tempSheet() {
   let v = last && Date.now() - last.start < 2 * DAY ? Number(last.value) : 36.8;
   openSheet(`<h3>${ART.icons.temp}체온</h3>
     <div class="amount"><button class="round" data-d="-0.1">−</button><div class="n" id="tv">${v.toFixed(1)}<small>℃</small></div><button class="round" data-d="0.1">+</button></div>
+    <div class="chips tq">${[36.5, 37.0, 37.5, 38.0, 38.5, 39.0].map((x) => `<button class="chip" data-v="${x}">${x.toFixed(1)}</button>`).join('')}</div>
     <div class="lbl" style="text-align:center" id="tw"></div><button class="primary" id="save">저장</button>`, (el) => {
     const show = () => {
       $('#tv').innerHTML = `${v.toFixed(1)}<small>℃</small>`;
@@ -1814,6 +1885,7 @@ function tempSheet() {
     el.addEventListener('click', (e) => {
       const b = e.target.closest('button'); if (!b) return;
       if (b.dataset.d) { v = Math.round((v + Number(b.dataset.d)) * 10) / 10; v = Math.max(34, Math.min(42, v)); show(); }
+      else if (b.dataset.v) { v = Number(b.dataset.v); show(); }
       else if (b.id === 'save') { closeSheet(); const r = addRec({ type: 'temp', start: Date.now(), value: v }); toast(r, 'new', `체온 ${v.toFixed(1)}℃ 기록했어요`); }
     });
   });
@@ -1835,7 +1907,8 @@ function medSheet() {
         if (prev && prev.d2) $('#ma').value = prev.d2;
       } else if (b.id === 'save') {
         const n = $('#mn').value.trim(); if (!n) { note('약 이름을 입력해주세요'); return; }
-        closeSheet(); const r = addRec({ type: 'med', start: Date.now(), d1: n, d2: $('#ma').value.trim() }); toast(r, 'new', `약 ${n} 기록했어요`);
+        const amt = $('#ma').value.trim();   // 창을 닫기 전에 읽어야 함(닫으면 입력칸이 없어짐)
+        closeSheet(); const r = addRec({ type: 'med', start: Date.now(), d1: n, d2: amt }); toast(r, 'new', `약 ${n} 기록했어요`);
       }
     });
   });
@@ -1881,6 +1954,8 @@ function editSheet(arg) {
   const isNew = typeof arg === 'object';
   const r = isNew ? Object.assign({ end: null, value: null, d1: '', d2: '', d3: '', kind: '', memo: '', by: S.auth.user }, arg) : S.recs[arg];
   if (!r) return;
+  // 연 순간의 값(바꾼 칸만 저장하는 데 씀). 시각은 입력칸과 같은 분 단위로 맞춰 비교
+  const r0 = { ...r, start: fromLocalInput(toLocalInput(r.start)), end: r.end ? fromLocalInput(toLocalInput(r.end)) : r.end };
   const id = isNew ? null : arg;
   const T = TYPES[r.type] || { n: r.type, i: 'memo' };
   let body = `<div class="field"><label>${r.type === 'sleep' ? '잠든 시각' : '시각'}</label><input type="datetime-local" id="es" value="${toLocalInput(r.start)}"></div>`;
@@ -1916,7 +1991,7 @@ function editSheet(arg) {
         if (!patch.end && openSleep() && openSleep().id !== id) { note('이미 자는 중인 기록이 있어요'); return; }
         patch.kind = $('#ek').value || (patch.end ? sleepKind(patch.start, patch.end) : (isNightTime(patch.start) ? '밤' : '낮'));
         // 겹침 검사는 시각을 새로 넣거나 바꿀 때만. 수정은 알려주고 고를 수 있게(메모만 고칠 때 막히지 않게)
-        const timesChanged = isNew || patch.start !== r.start || patch.end !== r.end;
+        const timesChanged = isNew || patch.start !== r0.start || (patch.end || null) !== (r0.end || null);
         if (timesChanged) {
           const s2 = patch.start, e2 = patch.end || Date.now();
           const clash = sleeps().find((x) => x.id !== id && x.start < e2 && (x.end || Date.now()) > s2);
@@ -1940,7 +2015,7 @@ function editSheet(arg) {
         addRec(Object.assign({ type: r.type }, patch));
         if (dkey(patch.start) !== S.day && S.tab === 'day') { S.day = dkey(patch.start); render(); }
         note('추가했어요');
-      } else { updateRec(id, patch); note('수정했어요'); }
+      } else { updateRec(id, patch, r0); note('수정했어요'); }
     });
   });
 }
@@ -2052,7 +2127,9 @@ function saveDayMemo(el, quiet) {
   const cur = S.memos[key];
   if ((cur ? cur.text : '') === text) return;
   S.memos[key] = { text, by: S.auth.user }; saveCache();
-  enqueue({ op: 'memo', id: key, text });
+  // base = 이 휴대폰이 마지막으로 본 서버 메모. 그 사이 다른 가족이 고쳤으면 서버가 두 내용을 합친다(덮어쓰지 않음)
+  enqueue({ op: 'memo', id: key, text, base: el.dataset.base == null ? undefined : el.dataset.base });
+  el.dataset.base = text;
   if (!quiet) note('메모 저장됨');
 }
 

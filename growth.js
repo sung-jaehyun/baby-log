@@ -371,7 +371,7 @@ function formSheet({ title, icon, body, rec, onSave, onMount, reopen }) {
 const numVal = (id) => { const v = $(id).value.trim(); return v === '' ? null : Number(v); };
 function saveOrAdd(rec, fields) {
   closeSheet();
-  if (rec) { updateRec(rec.id, fields); note('수정했어요'); } else { addRec(fields); note('저장했어요'); }
+  if (rec) { updateRec(rec.id, fields, rec); note('수정했어요'); } else { addRec(fields); note('저장했어요'); }
 }
 
 function growthSheet(rec) {

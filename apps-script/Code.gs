@@ -3,14 +3,15 @@
  * 이 파일 전체를 Apps Script 편집기의 Code.gs에 붙여넣고, setup 실행 후 "웹 앱"으로 배포하세요.
  */
 const TZ = 'Asia/Seoul';
-const API_VERSION = 4;
+const API_VERSION = 5;
 /** 성장 탭 기록과 이유식은 오래돼도 항상 앱에 보낸다 */
 const LONG_TYPES = { growth: 1, vax: 1, checkup: 1, hospital: 1, milestone: 1, anniv: 1, food: 1 };
 /** '매일 기록만 지우기'에서 남기는 종류(성장 탭 기록) */
 const GROWTH_TYPES = { growth: 1, vax: 1, checkup: 1, hospital: 1, milestone: 1, anniv: 1 };
 const KEEP_DAYS = 45;
-const MAX_FAILS = 10;              // PIN을 이만큼 틀리면
-const LOCK_SECONDS = 3600;         // 이 시간 동안 잠금
+const MAX_FAILS = 10;              // 1시간 안에 PIN을 이만큼 틀리면
+const LOCK_SECONDS = 900;          // 15분 동안 모든 PIN을 막는다(맞는 PIN도). 이미 로그인한 휴대폰은 기록을 들고 기다렸다 올림
+const FAIL_WINDOW = 3600;
 const WEAK_PINS = ['1111', '2222', '3333', '0000', '1234'];
 
 const SHEETS = {
@@ -49,7 +50,10 @@ function doPost(e) {
   try {
     const req = JSON.parse(e.postData.contents);
     if (!isReady_()) withLock_(function () { if (!isReady_()) ensure_(); });
-    // 맞는 PIN은 언제나 통과. 틀린 PIN만 세어서, 많이 틀리면 '틀린 PIN 시도'만 막는다(가족은 영향 없음)
+    // PIN 해시 변환은 '웹 앱 요청'에서만(편집기에서 setup만 먼저 돌려 옛 웹 앱과 어긋나는 일 방지)
+    if (props_().getProperty('pinHashed') !== '1') withLock_(function () { if (props_().getProperty('pinHashed') !== '1') { hashPins_(); props_().setProperty('pinHashed', '1'); } });
+    // 잠긴 동안은 맞는 PIN도 막는다(숫자를 하나씩 대입해 보는 공격 방지)
+    if (CacheService.getScriptCache().get('pinLock')) return out_({ ok: false, code: 'locked', err: 'PIN을 여러 번 틀려 잠시 막혔어요. 15분 뒤 다시 해주세요.' });
     const user = auth_(req.pin);
     if (!user) {
       // 틀린 PIN: 잠금을 잡고 세어(동시에 여러 번 보내도 정확히 셈), 일부러 천천히 답한다
@@ -58,9 +62,13 @@ function doPost(e) {
       if (!lock.tryLock(3000)) return out_({ ok: false, code: 'pin', err: 'PIN이 맞지 않아요.' });
       try {
         const cache = CacheService.getScriptCache();
-        const fails = Number(cache.get('pinFails') || 0);
-        if (fails >= MAX_FAILS) return out_({ ok: false, code: 'locked', err: 'PIN을 여러 번 틀려 잠시 막혔어요. 1시간 뒤 다시 해주세요.' });
-        cache.put('pinFails', String(fails + 1), LOCK_SECONDS);
+        // 첫 실패 시각부터 1시간 안의 실패만 센다
+        let f = {}; try { f = JSON.parse(cache.get('pinFails') || '{}'); } catch (x) {}
+        const now = Date.now();
+        if (!f.t || now - f.t > FAIL_WINDOW * 1000) f = { t: now, n: 0 };
+        f.n++;
+        if (f.n >= MAX_FAILS) { cache.put('pinLock', '1', LOCK_SECONDS); cache.remove('pinFails'); return out_({ ok: false, code: 'locked', err: 'PIN을 여러 번 틀려 잠시 막혔어요. 15분 뒤 다시 해주세요.' }); }
+        cache.put('pinFails', JSON.stringify(f), Math.max(60, FAIL_WINDOW - Math.round((now - f.t) / 1000)));
       } finally { lock.releaseLock(); }
       return out_({ ok: false, code: 'pin', err: 'PIN이 맞지 않아요.' });
     }
@@ -87,7 +95,7 @@ function withLock_(fn) {
   try { return fn(); } finally { lock.releaseLock(); }
 }
 function props_() { return PropertiesService.getScriptProperties(); }
-function isReady_() { return props_().getProperty('ready') === '3'; }
+function isReady_() { return props_().getProperty('ready') === '4'; }
 function rev_() { return Number(props_().getProperty('rev') || 0); }
 function bumpRev_() { props_().setProperty('rev', String(rev_() + 1)); }
 function resetAt_() { return Number(props_().getProperty('resetAt') || 0); }
@@ -142,10 +150,10 @@ const API = {
         if (!ts && op.op === 'add') return { ok: false, code: 'reset' };
       }
       try {
-        if (op.op === 'add') return { ok: true, rec: addRec_(s, op.rec, user, names) };
-        if (op.op === 'update') return { ok: true, rec: updateRec_(s, Object.assign({}, op.rec, { id: op.id })) };
+        if (op.op === 'add') return { ok: true, rec: addRec_(s, check_(op.rec, true), user, names) };
+        if (op.op === 'update') return { ok: true, rec: updateRec_(s, Object.assign({}, check_(op.rec, false), { id: op.id })) };
         if (op.op === 'remove') return { ok: true, rec: updateRec_(s, { id: op.id, deleted: true }) };
-        if (op.op === 'memo') { saveMemo_(op.id, op.text, user); return { ok: true }; }
+        if (op.op === 'memo') { saveMemo_(op.id, op.text, user, op.base); return { ok: true }; }
         return { ok: false, code: 'error', err: '알 수 없는 작업' };
       } catch (err) {
         if (isTransient_(err)) { stop = true; return { ok: false, code: 'retry', err: msg_(err) }; }
@@ -190,6 +198,7 @@ const API = {
   },
 
   saveUsers: function (d, user) {
+    if (user !== adminName_()) throw new Error('사용자·PIN 관리는 관리자(사용자 목록 맨 위)만 할 수 있어요.');
     const s = sh_('users');
     let list = (d.users || []).filter(function (u) { return u.name; });
     const cur = readUsers_();
@@ -203,8 +212,9 @@ const API = {
     }
     const rows = list.map(function (u) {
       const prev = cur.filter(function (c) { return c.name === (u.oldName || u.name); })[0];
-      const pin = u.pin ? String(u.pin) : (prev ? prev.pin : '');
-      if (!/^\d{4}$/.test(pin)) throw new Error(u.name + '님의 PIN(숫자 4자리)을 입력해주세요.');
+      if (u.pin && !/^\d{4}$/.test(String(u.pin))) throw new Error(u.name + '님의 PIN(숫자 4자리)을 입력해주세요.');
+      const pin = u.pin ? hashPin_(String(u.pin)) : (prev ? (/^h1:/.test(prev.pin) ? prev.pin : hashPin_(prev.pin)) : '');
+      if (!pin) throw new Error(u.name + '님의 PIN(숫자 4자리)을 입력해주세요.');
       return [safe_(u.name), pin, u.active ? 'Y' : 'N'];
     });
     const pins = rows.filter(function (r) { return r[2] === 'Y'; }).map(function (r) { return r[1]; });
@@ -222,10 +232,10 @@ const API = {
     if (!/^\d{4}$/.test(pin)) throw new Error('PIN은 숫자 4자리로 해주세요.');
     if (WEAK_PINS.indexOf(pin) >= 0) throw new Error('너무 쉬운 PIN이에요. 다른 숫자로 해주세요.');
     const us = readUsers_();
-    if (us.some(function (u) { return u.name !== user && u.pin === pin; })) throw new Error('다른 사람과 같은 PIN이에요.');
+    if (us.some(function (u) { return u.name !== user && pinMatch_(u.pin, pin); })) throw new Error('다른 사람과 같은 PIN이에요.');
     const s = sh_('users');
     const row = findRow_(s, user);
-    s.getRange(row, 2).setValue(pin);
+    s.getRange(row, 2).setValue(hashPin_(pin));
     log_(user, 'PIN 변경', '', '');
     return {};
   },
@@ -267,6 +277,25 @@ const API = {
 };
 
 /* ---------- 기록 쓰기 ---------- */
+/** 서버 쪽 최소 검사: 종류·시각·글자 길이(앱이 아닌 곳에서 이상한 값이 들어오지 않게) */
+const KNOWN_TYPES = { feed: 1, sleep: 1, diaper: 1, bath: 1, temp: 1, med: 1, walk: 1, memo: 1, food: 1, growth: 1, vax: 1, checkup: 1, hospital: 1, milestone: 1, anniv: 1 };
+function check_(r, isAdd) {
+  r = r || {};
+  if (isAdd && !KNOWN_TYPES[r.type]) throw new Error('알 수 없는 기록 종류예요.');
+  if ('type' in r && !isAdd) delete r.type;
+  ['start', 'end'].forEach(function (k) {
+    if (r[k] === null || r[k] === undefined || r[k] === '') return;
+    const v = Number(r[k]);
+    // 기념일·접종·검진 등 성장 기록은 미리(최대 3년 뒤) 넣을 수 있음. 매일 기록은 미래 1일까지
+    const ahead = LONG_TYPES[r.type] || !isAdd ? 3 * 365 * 864e5 : 864e5;
+    if (!isFinite(v) || v < 1.5e12 || v > Date.now() + ahead) throw new Error('시각이 올바르지 않아요.');
+    r[k] = v;
+  });
+  if (isAdd && !r.start) throw new Error('시각이 없어요.');
+  if (r.value !== null && r.value !== undefined && r.value !== '' && !isFinite(Number(r.value))) throw new Error('값이 숫자가 아니에요.');
+  ['d1', 'd2', 'd3', 'kind', 'memo'].forEach(function (k) { if (r[k] != null) r[k] = String(r[k]).slice(0, 500); });
+  return r;
+}
 function addRec_(s, r, user, names) {
   const row = findRow_(s, r.id);
   if (row) return rowToRec_(s.getRange(row, 1, 1, SHEETS.rec.head.length).getValues()[0]); // 재전송: 이미 저장됨
@@ -286,9 +315,15 @@ function updateRec_(s, r) {
   s.getRange(row, 1, 1, SHEETS.rec.head.length).setValues([recToRow_(merged)]);
   return merged;
 }
-function saveMemo_(date, text, user) {
+function saveMemo_(date, text, user, base) {
   const s = sh_('memo');
   const row = findRow_(s, date);
+  text = String(text == null ? '' : text).slice(0, 300);
+  // 이 휴대폰이 본 메모(base) 이후에 다른 가족이 고쳤으면 덮어쓰지 않고 이어 붙인다
+  if (row && base !== undefined && base !== null) {
+    const cur = unsafe_(s.getRange(row, 2).getValue());
+    if (cur && cur !== String(base) && text.indexOf(cur) < 0) text = text ? (cur + ' / ' + text).slice(0, 300) : cur;   // 비우려 했는데 그사이 다른 가족이 썼으면 그 내용은 남김
+  }
   const vals = [String(date), safe_(text), safe_(user), Date.now()];
   if (row) s.getRange(row, 1, 1, 4).setValues([vals]); else s.appendRow(vals);
 }
@@ -309,7 +344,7 @@ function ensure_() {
     if (k === 'rec') { s.getRange('C:D').setNumberFormat('0'); s.getRange('N:O').setNumberFormat('0'); }
     if (fresh) seed_(k, s);
   });
-  props_().setProperty('ready', '3');
+  props_().setProperty('ready', '4');
 }
 
 function seed_(k, s) {
@@ -324,8 +359,7 @@ function seed_(k, s) {
 
 /** 처음 1번 편집기에서 실행: 시트를 만들고 서식을 맞춥니다. (다시 실행해도 기록은 지워지지 않아요) */
 function setup() {
-  props_().deleteProperty('ready');
-  ensure_();
+  withLock_(function () { props_().deleteProperty('ready'); ensure_(); });
   SpreadsheetApp.getActive().toast('시트 준비 완료. 사용자 탭에서 PIN을 바꿔주세요.');
 }
 
@@ -390,14 +424,33 @@ function safe_(v) { const s = String(v == null ? '' : v); return /^[=+\-@]/.test
 function unsafe_(v) { const s = String(v == null ? '' : v); return /^'[=+\-@]/.test(s) ? s.slice(1) : s; }
 function str_(v) { return v instanceof Date ? Utilities.formatDate(v, TZ, 'yyyy-MM-dd') : String(v); }
 
+/* PIN은 시트에 그대로 두지 않고 'h1:'+해시로 저장. 잊어버리면 관리자가 앱 설정에서 새로 정해준다 */
+function salt_() {
+  let v = props_().getProperty('pinSalt');
+  if (!v) { v = Utilities.getUuid(); props_().setProperty('pinSalt', v); }
+  return v;
+}
+function hashPin_(pin) {
+  return 'h1:' + Utilities.base64Encode(Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, salt_() + ':' + String(pin), Utilities.Charset.UTF_8));
+}
+function pinMatch_(stored, pin) { return /^h1:/.test(stored) ? stored === hashPin_(pin) : stored === String(pin); }
 function auth_(pin) {
-  if (!pin) return null;
-  const u = readUsers_().filter(function (x) { return x.active && x.pin === String(pin); })[0];
+  if (!pin || !/^\d{4}$/.test(String(pin))) return null;
+  const u = readUsers_().filter(function (x) { return x.active && pinMatch_(x.pin, pin); })[0];
   return u ? u.name : null;
+}
+/** 예전처럼 숫자로 적힌 PIN을 해시로 바꾼다(새 버전 배포 후 처음 한 번 자동) */
+function hashPins_() {
+  const s = sh_('users'), n = s.getLastRow() - 1;
+  if (n < 1) return;
+  const r = s.getRange(2, 2, n, 1), v = r.getValues();
+  let changed = false;
+  v.forEach(function (x) { const p = String(x[0]); if (p && !/^h1:/.test(p)) { x[0] = hashPin_(p.padStart(4, '0')); changed = true; } });
+  if (changed) r.setValues(v);
 }
 function readUsers_() {
   return rows_('users').filter(function (r) { return r[0]; })
-    .map(function (r) { return { name: unsafe_(r[0]), pin: String(r[1]).padStart(4, '0'), active: String(r[2]).toUpperCase() !== 'N' }; });
+    .map(function (r) { const p = String(r[1]); return { name: unsafe_(r[0]), pin: /^h1:/.test(p) ? p : p.padStart(4, '0'), active: String(r[2]).toUpperCase() !== 'N' }; });
 }
 function readSettings_() {
   const o = Object.assign({}, DEFAULT_SETTINGS);
