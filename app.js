@@ -311,7 +311,7 @@ function planInfo(p, name) {
   const ww = []; let prev = wake;
   naps.forEach((n) => { ww.push(n.s - prev); prev = n.e; });
   ww.push(bed - prev);
-  return { name, raw: p, naps, wake, bed, bath: p.bath ? toMin(p.bath) : null, ww, interval: Number(p.feedInterval) || 180,
+  return { name, raw: p, naps, wake, bed, bath: p.bath ? toMin(p.bath) : null, ww, interval: Math.min(480, Math.max(60, Number(p.feedInterval) || 180)),
     feeds: (p.feeds || []).map(([t, l]) => ({ t: toMin(t), l })) };
 }
 function isNightTime(ms) {
@@ -426,9 +426,16 @@ function statusInfo() {
   else if ((bedAt - last.end) / MIN > lastWW + 90) {
     // 일정표보다 낮잠을 더 잤는데 밤잠까지 많이 남음: 깨시 4시간 같은 무리한 목표 대신 한 번 더 재우기 안내
     target = P.ww[P.naps.length - 1] || lastWW; pred = last.end + target * MIN; next = '추가 낮잠';
-  } else { pred = bedAt; target = Math.max(lastWW, (pred - last.end) / MIN); next = '밤잠'; }
-  return { ...base, mode: 'awake', el, n, last: n > P.naps.length, target, pred, next, pct: Math.min(100, (el / target) * 100), color: tone((pred - now) / MIN) };
+  } else { pred = clampBed(last.end + lastWW * MIN, bedAt); target = Math.max(1, (pred - last.end) / MIN); next = '밤잠'; }
+  const st = { ...base, mode: 'awake', el, n, last: n > P.naps.length, target, pred, next, lastEnd: last.end, lastKind: last.kind };
+  // 남은 일정 예측에서 다음 낮잠이 빠지면(밤잠·목욕에 너무 가까움) 상태 카드도 '밤잠'으로 맞춘다
+  const F = dayForecast(st);
+  if (F && next !== '밤잠' && !F.naps.length && !F.stale) { st.next = '밤잠'; st.pred = F.bed; st.target = Math.max(1, (F.bed - last.end) / MIN); st.last = true; }
+  st.pct = Math.min(100, (el / st.target) * 100); st.color = tone((st.pred - now) / MIN);
+  return st;
 }
+/* 상태 카드·한 줄 안내·남은 일정이 같은 예측을 쓰도록, 그린 김에 한 번만 계산해 둔다 */
+function forecastOf(st) { if (!('_F' in st)) st._F = dayForecast(st); return st._F; }
 function charState() {
   const now = Date.now();
   if (openSleep()) return 'sleep';
@@ -603,7 +610,7 @@ function statusCard(st) {
     ${pct == null ? '' : `<div class="bar2"><b style="width:${pct.toFixed(1)}%;background:${color}"></b></div>`}<div class="n">${n}</div></div>`;
   const none = (cls, ico, name, msg) => `<div class="tile t${cls} empty-t"><div class="hd"><i>${ART.icons[ico]}</i>${name}</div><div class="v">${msg}</div></div>`;
   const fi = st.feedInfo;
-  const feedT = fi ? tile('F', 'feed', '수유한 지', minShort(fi.el), fi.pct, fi.color === 'var(--nap)' ? 'var(--feed)' : fi.color, `다음 수유 ${hm(fi.pred)}쯤`)
+  const feedT = fi ? tile('F', 'feed', '수유한 지', minShort(fi.el), fi.pct, fi.color === 'var(--nap)' ? 'var(--feed)' : fi.color, `다음 ${esc((nextFeed(st) || { n: '수유' }).n === '막수' ? '막수' : '수유')} ${hm((nextFeed(st) || { t: fi.pred }).t)}쯤`)
     : none('F', 'feed', '수유', '기록이 아직 없어요');
   const card = (title, tag, sub, sleepT) => `<div class="hero"><div class="hbody">${phBig}<div class="hright">
       <div><div class="st">${title}${tag ? `<span class="tag2">${tag}</span>` : ''}</div><div class="st-sub">${sub}</div></div>
@@ -633,7 +640,8 @@ function statusCard(st) {
 /* 깨어 있을 때 상태 카드 제목 아래 한 줄: 다음 잠·수유 중 먼저 오는 것을 말로 (15분 이내면 '곧', 지나면 '지났어요') */
 function todoLine(st) {
   const now = Date.now(), c = [{ w: st.next === '밤잠' ? '밤잠' : '낮잠', l: st.next, t: st.pred }];
-  if (st.feedInfo && st.feedInfo.pred > now - 3 * HOUR) c.push({ w: '분유', l: '분유', t: st.feedInfo.pred });   // 남은 일정 목록과 같은 기준
+  const nf = nextFeed(st);
+  if (nf) c.push({ w: '분유', l: '분유', t: nf.t });   // 남은 일정 목록과 같은 예측(막수로 합쳐졌으면 막수 시각)
   c.sort((a, b) => a.t - b.t);
   const soon = c.filter((x) => x.t - now <= 15 * MIN), names = (l) => l.map((x) => x.w).join('·');
   const past = soon.filter((x) => x.t <= now), next = soon.filter((x) => x.t > now);
@@ -650,9 +658,71 @@ function feedLabelFor(P, key, pred) {
   const n = P.feeds.findIndex((f) => pt(f) > pred);
   return { label: '수유', next: n < 0 ? P.feeds.length : n };
 }
-/* 오늘 남은 일정: 다음 잠·다음 수유는 실제 기록으로 다시 계산한 시각, 그 뒤는 일정표 시각 */
+/* 오늘 남은 일정: dayForecast 참고(실제 기록에서 이어서 계산). nextFeed = 예측의 첫 수유(없으면 실제 마지막 수유+간격) */
+function nextFeed(st) {
+  const F = (st.mode === 'awake' || st.mode === 'nap') ? forecastOf(st) : null;
+  if (F && F.feeds.length) return F.feeds[0];
+  if (st.feedInfo && st.feedInfo.pred > Date.now() - 3 * HOUR) return { t: st.feedInfo.pred, n: '수유' };
+  return null;
+}
+const BED_FLEX = 30;   // 하루가 밀리거나 당겨져도 밤잠은 일정표보다 최대 30분까지만 늦추거나 당김
+const clampBed = (t, planBed) => Math.min(planBed + BED_FLEX * MIN, Math.max(planBed - BED_FLEX * MIN, t));
+
+/* 오늘 남은 일정 예측(docs/CHECKLIST.md 4-1차): 일정표 '시각'이 아니라 실제 깬 시각·실제 마지막 수유에서부터 목표 깨시·낮잠 길이·수유 간격으로 이어서 계산.
+   밤잠은 깨시대로 밀되 일정표 ±30분 안. 넘치면 마지막 낮잠을 짧게(최소 20분). 목욕·막수는 밤잠에 붙여서 움직이고,
+   막수 1시간 안으로 겹치는 수유는 막수로 합친다. 밤잠 뒤에 수유·낮잠이 오는 일은 없음 */
+function dayForecast(st) {
+  const now = Date.now(), today = dkey(now), P = st.P;
+  const planBed = at(today, P.raw.bed), iv = P.interval * MIN;
+  const lenOf = (i) => Math.max(20, (P.naps[i].e - P.naps[i].s)) * MIN;
+  const lf = [...P.feeds].reverse().find((f) => P.bed - f.t >= 0 && P.bed - f.t <= 90);   // 막수 = 밤잠 전 90분 안의 마지막 일정표 수유
+  const recs = dayRecs(today), bathDone = recs.some((r) => r.type === 'bath'), lastFeed = lastOf('feed');
+  const naps = [];
+  let t = null, si = P.naps.length, stale = false;
+  if (st.mode === 'awake') {
+    // 밤잠 기록을 빠뜨렸거나(마지막 잠이 오늘 것이 아님) 예정이 3시간 넘게 지났으면 이어서 계산할 근거가 없음 → 일정표 시각
+    stale = (st.lastEnd && st.lastKind === '낮' && dkey(st.lastEnd) !== today) || st.pred < now - 3 * HOUR;
+    const base = Math.max(now, st.pred);   // 예정이 지났는데 아직 안 잤으면 '지금 잠든다'고 보고 다음을 계산
+    if (stale) t = null;   // 아래에서 일정표 시각으로
+    else if (st.next === '추가 낮잠') { const L = P.naps.length ? lenOf(P.naps.length - 1) : 40 * MIN; naps.push({ t: st.pred, n: '추가 낮잠', len: L }); t = base + L + (P.ww[P.ww.length - 1] || 120) * MIN; }
+    else if (st.next === '밤잠') t = st.pred;
+    else { si = st.n - 1; t = st.pred; }
+    if (!stale && si < P.naps.length) {
+      // 첫 낮잠은 예정 시각에 보여 주되(지났으면 '지남'), 그 뒤는 실제로 잠들 수 있는 시각(base)부터 이어서
+      const len = lenOf(si); naps.push({ t: st.pred, n: `낮잠${si + 1}`, len }); t = base + len + P.ww[si + 1] * MIN; si++;
+    }
+  } else if (st.mode === 'nap') {
+    const wake = Math.max(now, st.pred || now + 30 * MIN);   // 예정보다 오래 자는 중이면 '지금 깬다'고 보고 계산
+    si = st.idx; t = wake + (P.ww[Math.min(st.idx, P.ww.length - 1)] || 120) * MIN;
+  } else return null;
+  if (stale) {
+    P.naps.forEach((x, i) => { const nt = at(today, hmM(x.s)); if (nt > now) naps.push({ t: nt, n: `낮잠${i + 1}`, len: lenOf(i) }); });
+    t = planBed;
+  } else for (let i = si; i < P.naps.length; i++) { const len = lenOf(i); naps.push({ t, n: `낮잠${i + 1}`, len }); t = t + len + P.ww[i + 1] * MIN; }
+  let bed = t;
+  const hi = planBed + BED_FLEX * MIN;
+  if (!stale && bed > hi && naps.length) { const L = naps[naps.length - 1], cut = Math.max(20 * MIN, L.len - (bed - hi)); if (cut < L.len) { L.len = cut; L.short = true; } }
+  bed = clampBed(bed, planBed);
+  if (st.mode === 'awake' && st.next === '밤잠' && !stale) bed = st.pred;   // 상태 카드와 같은 시각
+  const bath = P.bath != null && !bathDone ? bed - (P.bed - P.bath) * MIN : null;
+  let bedFeed = lf ? { t: bed - (P.bed - lf.t) * MIN, n: lf.l } : null;
+  if (bedFeed && lastFeed && lastFeed.start >= bedFeed.t - 60 * MIN && lastFeed.start <= bed) bedFeed = null;   // 이미 막수 먹음
+  // 목욕(없으면 막수, 그것도 없으면 밤잠 30분 전)까지 못 끝나는 낮잠은 뺀다(첫 '바로 다음' 낮잠은 지났어도 유지)
+  const cutoff = bath || (bedFeed && bedFeed.t) || bed - 30 * MIN;
+  while (naps.length && naps[naps.length - 1].t + 20 * MIN > cutoff) naps.pop();
+  const feeds = [], stop = Math.min(bed, bedFeed ? bedFeed.t - 60 * MIN : bed);
+  if (!stale && st.feedInfo && st.feedInfo.pred > now - 3 * HOUR) {
+    const fb = Math.max(now, st.feedInfo.pred);
+    for (let f = st.feedInfo.pred, k = 0; f < stop && k < 12; k++, f = (k === 1 ? fb : f) + iv) {
+      let n = feedLabelFor(P, today, f).label; if (bedFeed && n === bedFeed.n) n = '수유';
+      feeds.push({ t: f, n, due: !feeds.length });
+    }
+  } else P.feeds.forEach((f) => { const ft = at(today, hmM(f.t)); if (ft > now && ft < stop && (!lf || f !== lf)) feeds.push({ t: ft, n: f.l }); });
+  if (bedFeed) feeds.push({ t: bedFeed.t, n: bedFeed.n, due: !feeds.length && !!st.feedInfo });
+  return { naps, bed, bath, feeds, stale };
+}
 function planItems(st) {
-  const now = Date.now(), today = dkey(now), P = st.P, out = [];
+  const now = Date.now(), P = st.P, out = [];
   const plan = (key, m) => at(key, hmM(m));
   if (st.mode === 'night' || st.mode === 'nightwake') {
     const k = addDays(nightOf(st.mode === 'night' ? st.open : st.last), 1);
@@ -661,21 +731,15 @@ function planItems(st) {
     if (P.naps[0]) out.push({ t: plan(k, P.naps[0].s), n: '낮잠1', i: 'sleep' });
     return out;
   }
-  let napFrom = 0;
-  if (st.mode === 'awake') { out.push({ t: st.pred, n: st.next, i: 'sleep', due: 1 }); napFrom = st.last ? P.naps.length : st.n; }
-  else if (st.mode === 'nap') { if (st.pred) out.push({ t: st.pred, n: '깸', i: 'wake', due: 1 }); napFrom = st.idx; }
-  // 다음 수유 이름은 오늘 몇 번 먹었는지가 아니라 예상 시각과 가장 가까운 일정표 수유로 정한다(수유가 많은 날 막수가 당겨지지 않게)
-  let feedFrom = P.feeds.findIndex((f) => plan(today, f.t) > now); if (feedFrom < 0) feedFrom = P.feeds.length;
-  if (st.feedInfo && st.feedInfo.pred > now - 3 * HOUR) {
-    const f = feedLabelFor(P, today, st.feedInfo.pred);
-    out.push({ t: st.feedInfo.pred, n: f.label, i: 'feed', due: 1 }); feedFrom = f.next;
-  }
-  const after = Math.max(now, ...out.map((o) => o.t));
-  P.naps.forEach((n, i) => { const t = plan(today, n.s); if (i >= napFrom && t > now) out.push({ t, n: `낮잠${i + 1}`, i: 'sleep' }); });
-  P.feeds.forEach((f, i) => { const t = plan(today, f.t); if (i >= feedFrom && t > after - 30 * MIN) out.push({ t, n: f.l, i: 'feed' }); });
-  if (P.bath != null && !dayRecs(today).some((r) => r.type === 'bath')) { const t = plan(today, P.bath); if (t > now) out.push({ t, n: '목욕', i: 'bath' }); }
-  if (st.next !== '밤잠') { const t = at(today, P.raw.bed); if (t > now) out.push({ t, n: '밤잠', i: 'sleep' }); }
-  return out.sort((a, b) => a.t - b.t);
+  const F = forecastOf(st);
+  if (!F) return out;
+  if (st.mode === 'nap' && st.pred) out.push({ t: st.pred, n: '깸', i: 'wake', due: 1 });
+  F.naps.forEach((x, i) => out.push({ t: x.t, n: x.short ? `${x.n} (${Math.round(x.len / MIN)}분만)` : x.n, i: 'sleep', due: st.mode === 'awake' && i === 0 }));
+  F.feeds.forEach((f) => out.push({ t: f.t, n: f.n, i: 'feed', due: f.due }));
+  if (F.bath) out.push({ t: F.bath, n: '목욕', i: 'bath' });
+  out.push({ t: F.bed, n: '밤잠', i: 'sleep', due: st.mode === 'awake' && !F.naps.length });
+  // 지난 예정은 '바로 다음 할 일'(due)만 남긴다(늦어진 것도 보이게, 3시간까지)
+  return out.filter((o) => (o.due ? o.t > now - 3 * HOUR : o.t > now)).sort((a, b) => a.t - b.t);
 }
 function planStrip(st) {
   if (st.mode === 'nodata') return '';
@@ -1372,13 +1436,14 @@ function closeSheet(replacing) { const d = $('#dim'); if (!d) return; const f = 
    - 버튼으로 창을 닫는 등 칸이 남으면 조용히 꺼낸다(안 그러면 홈에서 뒤로가기를 두 번 눌러야 꺼짐) */
 let backArmed = 0, backReleasing = false, backTimer = 0;
 const backNeed = () => (S.auth ? (S.tab !== 'home' ? 1 : 0) + ($('#dim') ? 1 : 0) : 0);
-function backSync() { clearTimeout(backTimer); backTimer = setTimeout(backFix, 0); }   // 창 닫고 바로 다른 창을 여는 경우를 한 번에 처리
-function backFix() {
+// 쌓기는 바로(누른 직후라야 크롬이 건너뛰지 않음), 꺼내기는 잠깐 미룸(창 닫고 바로 다른 창을 여는 경우를 한 번에 처리)
+function backSync() { backFix(true); clearTimeout(backTimer); backTimer = setTimeout(backFix, 0); }
+function backFix(pushOnly) {
   if (backReleasing || document.querySelector('.crop-ov')) return;
   const need = backNeed();
   try {
     while (backArmed < need) { history.pushState({ bg: 1 }, ''); backArmed++; }
-    if (backArmed > need) { const k = backArmed - need; backArmed = need; backReleasing = true; popSkip(); history.go(-k); }
+    if (pushOnly !== true && backArmed > need) { const k = backArmed - need; backArmed = need; backReleasing = true; popSkip(); history.go(-k); }
   } catch (e) { backReleasing = false; }
 }
 function popSkip() { window.__popSkip = (window.__popSkip || 0) + 1; window.__popSkipAt = Date.now(); }
@@ -1894,7 +1959,7 @@ function planSheet(name) {
     <div class="lbl" style="margin-top:10px">깨시는 기상·낮잠·밤잠 시각으로 자동 계산돼요.</div>
     <button class="primary" id="save">저장</button><button class="ghost" id="cancel">닫기</button>`;
   const read = (el) => {
-    el.querySelectorAll('[data-f]').forEach((i) => { p[i.dataset.f] = i.dataset.f === 'feedInterval' ? Number(i.value) || 180 : i.value; });
+    el.querySelectorAll('[data-f]').forEach((i) => { p[i.dataset.f] = i.dataset.f === 'feedInterval' ? Math.min(480, Math.max(60, Number(i.value) || 180)) : i.value; });
     el.querySelectorAll('[data-n]').forEach((i) => { p.naps[i.dataset.n][i.dataset.j] = i.value; });
     el.querySelectorAll('[data-fe]').forEach((i) => { p.feeds[i.dataset.fe][i.dataset.j] = i.value; });
   };

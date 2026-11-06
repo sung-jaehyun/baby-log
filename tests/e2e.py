@@ -14,6 +14,8 @@ async def login(pg, pin='1111'):
     for n in pin: await pg.click(f'[data-n="{n}"]')
     await pg.wait_for_selector('.hero', timeout=10000)
     await pg.wait_for_function('S.serverTime > 0', timeout=10000)
+    # 데모 기록 중 '방금 15분 안' 기록은 빼 둔다(테스트를 도는 시각에 따라 중복 확인 창이 떠서 결과가 달라지지 않게)
+    await pg.evaluate("(()=>{ const n=Date.now(); Object.values(S.recs).forEach(r=>{ if (!r.deleted && String(r.id).startsWith('demo') && Math.abs(n-r.start) < 15*60000) r.deleted = true; }); dirty(); render(true); })()")
 
 async def confirm_if_asked(pg):
     await pg.wait_for_timeout(150)
@@ -487,6 +489,60 @@ async def main():
           const n = P.naps.length + 2; for (let i=0;i<n;i++) add({type:'sleep',kind:'낮',start:now-(11-i)*3600000+600000,end:now-(11-i)*3600000+600000+25*60000}, i+1);
           dirty(); const s = statusInfo(); S.recs = save; dirty(); return [s.mode, s.next, Math.round(s.target), P.raw.bed]; })()""")
         check('일정보다 낮잠이 많아도 무리한 깨시 목표 안 냄(추가 낮잠 또는 밤잠)', st[0] != 'awake' or st[1] in ('추가 낮잠', '밤잠') and st[2] < 4 * 60, st)
+        # 오늘 남은 일정: 실제 기록에서 이어서 계산(11/6 실제 사례: 7시 기상, 전체가 늦어져 16:08 낮잠3 깸, 16:55 수유, 지금 17:28)
+        fc = await p2.evaluate("""(()=>{ const realNow = Date.now, k = dkey(realNow()), T = (h,m) => at(k, `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`);
+          const save = S.recs; S.recs = {}; let i = 0;
+          const add = (o) => { const id='fc'+(i++); S.recs[id] = Object.assign({id,value:null,d1:'',d2:'',d3:'',memo:'',by:'',created:0,updated:0,deleted:false,end:null,kind:''}, o); };
+          add({type:'sleep',kind:'밤',start:T(0,0)-4*3600000,end:T(7,0)});
+          add({type:'feed',start:T(8,10),value:150}); add({type:'sleep',kind:'낮',start:T(9,40),end:T(10,40)});
+          add({type:'feed',start:T(11,20),value:150}); add({type:'sleep',kind:'낮',start:T(12,20),end:T(13,50)});
+          add({type:'feed',start:T(14,0),value:150}); add({type:'sleep',kind:'낮',start:T(15,25),end:T(16,8)});
+          add({type:'feed',start:T(16,55),value:170});
+          dirty(); Date.now = () => T(17,28);
+          let r; try { const st = statusInfo(); const it = planItems(st); r = { next: st.next, pred: hm(st.pred), items: it.map(o => `${hm(o.t)} ${o.n}`), bed: hm(dayForecast(st).bed) }; }
+          finally { Date.now = realNow; S.recs = save; dirty(); }
+          return r; })()""")
+        it = fc['items']; names = [x.split(' ', 1)[1] for x in it]
+        bi = names.index('밤잠') if '밤잠' in names else -1
+        check('남은 일정: 밤잠 뒤에 수유·낮잠 없음, 막수는 밤잠 바로 앞', bi == len(names) - 1 and names[bi - 1] == '막수', it)
+        check('남은 일정: 낮잠4는 실제 깬 시각+깨시(17:53), 밤잠은 깨시대로 밀되 일정표+30분(20:10) 안', it[0].startswith('17:53 낮잠4') and fc['bed'] == '20:10', fc)
+        check('남은 일정: 목욕·막수가 밤잠을 따라 움직임(19:30 목욕, 19:50 막수)', '19:30 목욕' in it and '19:50 막수' in it, it)
+        # 독립 검토에서 나온 경계 상황들(Date.now 고정)
+        ed = await p2.evaluate("""(()=>{ const realNow = Date.now, k = dkey(realNow()), T = (h,m) => at(k, `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`);
+          const save = S.recs, savePF = planFor, out = {};
+          const run = (recs, now, pf) => { S.recs = {}; recs.forEach((o,i) => { S.recs['e'+i] = Object.assign({id:'e'+i,value:null,d1:'',d2:'',d3:'',memo:'',by:'',created:0,updated:0,deleted:false,end:null,kind:''}, o); });
+            dirty(); Date.now = () => now; if (pf) planFor = pf;
+            try { const st = statusInfo(); return { st, items: planItems(st).map(o => `${hm(o.t)} ${o.n}`), todo: st.mode === 'awake' ? todoLine(st).replace(/<[^>]+>/g,'') : '' }; }
+            finally { Date.now = realNow; planFor = savePF; } };
+          const night = {type:'sleep',kind:'밤',start:T(0,0)-4*3600000,end:T(7,0)};
+          try {
+            // A: 낮잠3 예정(14:45)이 지났는데 아직 안 잠, 16:45 → 낮잠4는 지금부터 계산(16:45+40분+깨시)
+            let r = run([night,{type:'sleep',kind:'낮',start:T(8,45),end:T(9,45)},{type:'sleep',kind:'낮',start:T(11,30),end:T(13,0)},{type:'feed',start:T(15,0),value:150}], T(16,45));
+            out.A = r.items;
+            // B: 낮잠1을 08:45부터 11:40까지 자는 중 → 낮잠2가 사라지지 않고 지금 기준으로
+            r = run([night,{type:'sleep',kind:'낮',start:T(8,45)}], T(11,40)); out.B = r.items;
+            // C: 낮잠을 늦게까지 자서 다음 낮잠이 목욕 전에 못 끝남 → 상태 카드도 밤잠
+            r = run([night,{type:'sleep',kind:'낮',start:T(8,45),end:T(9,45)},{type:'sleep',kind:'낮',start:T(16,0),end:T(18,0)},{type:'feed',start:T(17,0),value:150}], T(18,10));
+            out.C = [r.st.next, r.items, r.todo];
+            // D: 막수로 합쳐진 수유 → 한 줄 안내도 막수 기준(18:55, 마지막 수유 16:00)
+            r = run([night,{type:'sleep',kind:'낮',start:T(16,40),end:T(17,50)},{type:'feed',start:T(16,0),value:150}], T(18,55)); out.D = [r.items, r.todo];
+            // E: 밤잠 기록을 빠뜨린 다음 날 아침(어제 17:50 낮잠이 마지막) → 일정표 시각
+            r = run([{type:'sleep',kind:'낮',start:T(17,10)-86400000,end:T(17,50)-86400000}], T(7,30)); out.E = r.items;
+            // F: 수유 간격 −30으로 저장돼도 멈추지 않음
+            const P0 = savePF(k); const bad = planInfo(Object.assign({}, P0.raw, {feedInterval: -30}), 'x');
+            const t0 = realNow(); r = run([night,{type:'feed',start:T(16,0),value:150}], T(16,30), () => bad); out.F = [realNow() - t0 < 2000, r.items.length];
+            // G: 일정표에 밤잠 뒤 꿈수(22:30)가 있어도 밤잠 뒤 수유 없음
+            const dream = planInfo(Object.assign({}, P0.raw, {feeds: [['07:20','수유1'],['13:20','수유3'],['16:20','수유4'],['22:30','꿈수']]}), 'y');
+            r = run([night,{type:'sleep',kind:'낮',start:T(14,45),end:T(15,25)},{type:'feed',start:T(16,20),value:150}], T(16,30), () => dream); out.G = r.items;
+          } finally { S.recs = save; dirty(); }
+          return out; })()""")
+        A = ed['A']; check('경계A: 지난 낮잠3을 아직 안 잤으면 낮잠4는 지금부터 계산', A[0].endswith('낮잠3') and any('낮잠4' in x and x[:5] >= '17:25' for x in A) or not any('낮잠4' in x for x in A), A)
+        check('경계B: 낮잠1이 길어져도 낮잠2가 사라지지 않음', any('낮잠2' in x for x in ed['B']), ed['B'])
+        C = ed['C']; check('경계C: 목욕 전에 못 끝날 낮잠은 빼고 상태 카드도 밤잠', C[0] == '밤잠' and not any('낮잠' in x for x in C[1]), C)
+        D = ed['D']; check('경계D: 한 줄 안내와 남은 일정이 같은 수유 예측(막수로 합침)', not any(x.endswith(' 수유') for x in D[0]) and ('분유 시간이 지났어요' not in D[1]), D)
+        check('경계E: 밤잠 기록이 빠진 아침엔 일정표 시각으로 낮잠 표시', any('08:45 낮잠1' == x for x in ed['E']), ed['E'])
+        check('경계F: 수유 간격이 이상한 값이어도 멈추지 않음', ed['F'][0] and ed['F'][1] < 30, ed['F'])
+        G = ed['G']; bi = [x.split(' ',1)[1] for x in G].index('밤잠'); check('경계G: 밤잠 뒤 일정표 수유(꿈수)는 남은 일정에 없음', bi == len(G) - 1, G)
         # 저장 안내
         await p2.click('#tabs [data-tab="home"]'); await p2.click('[data-act="feed"]'); await p2.click('.sheet .primary'); await p2.wait_for_selector('#toast')
         tt = await p2.inner_text('#toast')
@@ -510,7 +566,7 @@ async def main():
         check('병원용 리포트: 7일·14일 표, 어제 값이 하루 합계와 같음', n7 == 7 and n14 == 14 and ok, [n7, n14, ok])
         await p2.go_back(); await p2.wait_for_timeout(300)
         check('병원용 리포트도 뒤로가기로 닫힘', not await p2.query_selector('#dim') and await p2.evaluate('S.tab') == 'growth')
-        await p2.click('#tabs [data-tab="home"]'); await p2.go_back(); await p2.wait_for_timeout(500)
+        await p2.click('#tabs [data-tab="home"]'); await p2.wait_for_timeout(300); await p2.go_back(); await p2.wait_for_timeout(500)
         check('홈에서 뒤로가기는 앱 종료(이전 페이지로)', '/tests/' in p2.url, p2.url)
         check('화면 오류 없음(4차)', not e2, e2)
         await b.close()
