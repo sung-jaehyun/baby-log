@@ -141,12 +141,14 @@ async def main():
         check('기존 잠과 겹치는 잠은 막음(안내 + 추가 안 됨)', await pg.query_selector('.sheet') is not None and '겹쳐요' in note_txt
               and await pg.evaluate("sleeps().length") == n_sleep, note_txt)
         await pg.click('#cancel')
+        await pg.click('.psum')   # 계획 대비는 기록 카드 안 요약 한 줄 → 누르면 펼침
         if await pg.query_selector('[data-act="dayMore"][data-k="planAll"]'): await pg.click('[data-act="dayMore"][data-k="planAll"]')
         cmp = await pg.inner_text('.cmp-list')
         check('계획 대비 목록 표시(더 보기로 전부)', '낮잠1' in cmp and '밤잠 시작' in cmp)
+        await pg.click('.psum')
         n_items = await pg.locator('.card.list button.item[data-act="edit"]').count()
-        n_day = await pg.evaluate("dayRecs(S.day).filter(r=>!GROWTH_ONLY.has(r.type)).length")
-        check('기록 전체는 5개까지 + 더 보기', n_items == min(5, n_day) and (n_day <= 5 or await pg.query_selector('[data-act="dayMore"][data-k="dayAll"]') is not None), (n_items, n_day))
+        n_day = await pg.evaluate("Number($('.card.list .h').firstChild.textContent.match(/(\\d+)건/)[1])")
+        check('기록 전체는 최근 5개까지 + 앞의 기록 더 보기', n_items == min(5, n_day) and (n_day <= 5 or await pg.query_selector('[data-act="dayMore"][data-k="dayAll"]') is not None), (n_items, n_day))
         await settle(pg)
 
         print('[반응 속도] (45일치 기록 + 휴대폰 저사양 수준으로 CPU 6배 느리게)')
@@ -606,6 +608,8 @@ async def main():
         await ev("addRec({type:'diaper',start:Date.now()-2*HOUR,d1:'대변',d2:'흰색·회색'})")
         check('흰색·회색 변 → 소아과 상담 주의 카드', '소아과' in await ev("$('.caution.bad') ? $('.caution.bad').innerText : ''"))
         # 중복 기록
+        # 데모 기록과 앞 테스트 기록이 시각상 우연히 겹친 쌍은 미리 '둘 다 맞아요' 처리(시각 의존 방지)
+        await ev("LS.set('dupOk', dupPairs().map(x=>x[2])); render()")
         await ev("addRec({type:'feed',start:Date.now()-2*MIN,value:150,by:'아내'}); addRec({type:'feed',start:Date.now()-MIN,value:150,by:'재현'})")
         check('다른 가족이 3분 안에 같은 분유 → 중복 안내', await ev("!!$('.caution.dup')"))
         n0 = await ev("live().filter(r=>r.type==='feed').length")
@@ -682,6 +686,60 @@ async def main():
         tl = await ev("performance.now()"); await ev("render()"); tl = await ev(f"performance.now()-{tl}")
         check(f'일정 탭 그리기 50ms 이내({tl:.0f}ms)', tl < 50)
         check('화면 오류 없음(6차)', not e5, e5)
+
+        print('[7차: 하루 탭 — 새벽 깸·기상, 시간순, 계획 대비(깨시·수유텀 ±15분)]')
+        w7 = await ev("""(()=>{ const k=addDays(dkey(Date.now()),-30), y=addDays(k,-1), P=planFor(k), T=(m)=>at(k,hmM(m));
+          Object.values(S.recs).forEach(r=>{ if(r.start>at(y,'12:00') && r.start<at(addDays(k,1),'00:00')) r.deleted=true; }); dirty();
+          const ids=[];
+          ids.push(addRec({type:'sleep',start:at(y,'19:40'),end:at(k,'05:00'),kind:'밤'}).id);
+          ids.push(addRec({type:'feed',start:at(k,'05:10'),value:120,d1:'분유'}).id);
+          ids.push(addRec({type:'sleep',start:at(k,'05:20'),end:at(k,'07:00'),kind:'밤'}).id);
+          const f1=T(P.feeds[0].t+5); ids.push(addRec({type:'feed',start:f1,value:150,d1:'분유'}).id);
+          const n1=at(k,'07:00')+(P.ww[0]+10)*MIN; ids.push(addRec({type:'sleep',start:n1,end:n1+60*MIN,kind:'낮'}).id);
+          const f2=f1+(P.feeds[1].t-P.feeds[0].t+20)*MIN; const f2id=addRec({type:'feed',start:f2,value:160,d1:'분유'}).id; ids.push(f2id);
+          S.tab='day'; S.day=k; S.dayAll=true; S.planOpen=false; render();
+          const items=[...document.querySelectorAll('.card.list button.item')].map(b=>[b.querySelector('.t').textContent, b.querySelector('.what span').textContent, (b.querySelector('.pdiff')||{}).textContent||'']);
+          const cards=[...document.querySelectorAll('#app .card .h')].map(e=>e.firstChild.textContent.trim());
+          const sum=$('.psum').innerText;
+          const ty=(S.day=y, render(), $('.card.list').innerText);
+          ids.forEach(id=>removeRec(id)); S.dayAll=false; S.day=dkey(Date.now()); render();
+          return {items, cards, sum, ty, nap:hm(n1), f2:hm(f2)}; })()""")
+        names = [x[1] for x in w7['items']]; times = [x[0] for x in w7['items']]
+        check('새벽: 05:00 새벽 깸 → 05:10 새벽 수유 → 05:20 밤잠 → 07:00 기상', names[:4] == ['새벽 깸', '새벽 수유', '밤잠', '기상'] and times[:4] == ['05:00', '05:10', '05:20', '07:00'], w7['items'][:5])
+        check('기록 목록은 아침부터 시간순', times == sorted(times), times)
+        check('전날 목록에는 잠든 시각(19:40)으로 그대로', '19:40' in w7['ty'] and '새벽 깸' not in w7['ty'])
+        check('계획 대비는 따로 카드 없이 기록 카드 안 요약 한 줄', not any(c.startswith('계획 대비') for c in w7['cards']) and '계획대로' in w7['sum'], (w7['cards'], w7['sum']))
+        nap = [x for x in w7['items'] if x[0] == w7['nap']]
+        check('깨시 +10분은 계획대로(표시 없음)', nap and nap[0][2] == '', nap)
+        f2 = [x for x in w7['items'] if x[0] == w7['f2']]
+        check('수유텀 +20분은 "수유텀 … 20분 길게" 표시', f2 and '수유텀' in f2[0][2] and '20분 길게' in f2[0][2], f2)
+        w8 = await ev("""(()=>{ const k=addDays(dkey(Date.now()),-31), y=addDays(k,-1), P=planFor(k), T=(m)=>at(k,hmM(m)), ids=[], A=(o)=>ids.push(addRec(o).id);
+          Object.values(S.recs).forEach(r=>{ if(r.start>at(y,'12:00') && r.start<at(addDays(k,1),'00:00')) r.deleted=true; }); dirty();
+          const out={};
+          // ① 05:00 깸 → 05:20 다시 잠(아직 자는 중): 05:00은 새벽 깸, 기상 비교는 아직
+          A({type:'sleep',start:at(y,'19:40'),end:at(k,'05:00'),kind:'밤'}); const op=addRec({type:'sleep',start:at(k,'05:20'),kind:'밤'}); ids.push(op.id);
+          S.tab='day'; S.day=k; render(); out.open=[...document.querySelectorAll('.card.list .item .what > span:first-child')].map(e=>e.textContent);
+          out.wake=compareRows(k).find(o=>o.n==='기상').d;
+          updateRec(op.id,{end:at(k,'06:30')});
+          // ② 06:45 아침 첫 수유(기상 06:30 뒤)는 수유1, 05:10은 새벽 수유
+          A({type:'feed',start:at(k,'05:10'),value:100}); A({type:'feed',start:at(k,'06:45'),value:150});
+          // ③ 토막잠(10분) 뒤 낮잠: 깨시는 기상부터
+          const n1=at(k,'06:30')+(P.ww[0]-5)*MIN; A({type:'sleep',start:n1,end:n1+10*MIN,kind:'낮'});
+          const n2=at(k,'06:30')+(P.ww[0]+20)*MIN; A({type:'sleep',start:n2,end:n2+60*MIN,kind:'낮'});
+          // ④ 수유2 뒤 1시간 만에 40ml → 추가 수유, 그다음은 수유3
+          const f2=at(k,'06:45')+(P.feeds[1].t-P.feeds[0].t)*MIN; A({type:'feed',start:f2,value:160}); A({type:'feed',start:f2+60*MIN,value:40});
+          const f3=f2+(P.feeds[2].t-P.feeds[1].t)*MIN; A({type:'feed',start:f3,value:160});
+          const rows=compareRows(k); S.dayAll=true; render();
+          out.f1=rows.find(o=>o.n===P.feeds[0].l); out.f3=rows.find(o=>o.n===P.feeds[2].l); out.extra=rows.filter(o=>o.n==='추가 수유').map(o=>o.a);
+          out.nap1=rows.find(o=>o.n==='낮잠1'); out.dawn=[...document.querySelectorAll('.card.list .item .what > span:first-child')].map(e=>e.textContent);
+          out.r=[hm(at(k,'06:45')), hm(f3), hm(f2+60*MIN)];
+          ids.forEach(id=>removeRec(id)); S.dayAll=false; S.day=dkey(Date.now()); render();
+          return JSON.parse(JSON.stringify({open:out.open, wake:out.wake, f1:[out.f1.a,out.f1.off], f3:[out.f3.a,out.f3.off], extra:out.extra, nap1:[out.nap1.a,out.nap1.off,out.nap1.d], dawn:out.dawn, r:out.r})); })()""")
+        check('다시 잠들어 자는 중이면 앞서 깬 건 "새벽 깸"(기상 아님)', '새벽 깸' in w8['open'] and '기상' not in w8['open'] and w8['wake'] is None, w8['open'])
+        check('기상 뒤 아침 수유는 수유1(새벽 수유 아님)', w8['r'][0] in w8['f1'][0] and '새벽 수유' in w8['dawn'], (w8['f1'], w8['dawn']))
+        check('토막잠(-5분에 재움) 뒤 다시 잔 낮잠: 깨시는 처음 재운 시각까지(-5분 → 계획대로)', not w8['nap1'][1] and abs(w8['nap1'][2] + 5) < 1, w8['nap1'])
+        check('중간에 조금 먹은 수유는 추가 수유, 다음은 제 순번(수유3 계획대로)', any(w8['r'][2] in x for x in w8['extra']) and w8['r'][1] in w8['f3'][0] and not w8['f3'][1], (w8['extra'], w8['f3']))
+        check('화면 오류 없음(7차)', not e5, e5)
         await b.close()
     print('\n결과:', '모두 통과' if not FAILS else f'{len(FAILS)}건 실패: ' + ', '.join(FAILS))
     sys.exit(1 if FAILS else 0)

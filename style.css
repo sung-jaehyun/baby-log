@@ -497,3 +497,20 @@ html[data-theme="dark"] .hero.m-night .bar2 b { background: #A9A2F0 !important; 
 .sb2 { display: flex; align-items: center; justify-content: space-between; padding: 8px 0; font-size: 14px; font-weight: 700; color: var(--text); }
 .sb2 small { display: block; font-size: 11.5px; color: var(--muted); font-weight: 600; margin-top: 1px; }
 html[data-theme="dark"] .ev.me { background: #2E3D66; color: #BFD0FF; } html[data-theme="dark"] .ev.an { background: #5A2E44; color: #FFC2D8; } html[data-theme="dark"] .ev.hl { background: #23473A; color: #A9E7C8; }
+
+/* ---------- 7차: 하루 탭 기록 + 계획 대비 합치기 ---------- */
+.pnext { font-size: 12.5px; font-weight: 700; color: var(--sub); background: var(--soft); border-radius: 10px; padding: 7px 10px; margin: 2px 0 6px; }
+.pnext b { color: var(--ink); }
+.psum { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; background: var(--soft2); border-radius: 12px; padding: 9px 11px; margin: 2px 0 6px; }
+.psum .k { font-size: 13px; font-weight: 800; color: var(--text); flex: none; }
+.psum .k small { display: block; font-size: 10.5px; color: var(--muted); font-weight: 700; }
+.psum .v { flex: 1; min-width: 0; font-size: 12px; font-weight: 600; color: var(--sub); line-height: 1.4; }
+.psum .v b { color: var(--ok); font-weight: 800; }
+.psum .ar { color: var(--muted); font-weight: 800; }
+.popen { border: 1px solid var(--line); border-radius: 12px; padding: 4px 8px 6px; margin-bottom: 6px; }
+.item .pdiff { display: inline-block; margin-top: 3px; font-size: 11px; font-weight: 800; color: #9A5B12; background: var(--over-bg); border-radius: 7px; padding: 1px 7px; }
+html[data-theme="dark"] .item .pdiff { color: #FFDFA6; background: #46381F; }
+.popen .ptl { font-size: 12.5px; font-weight: 800; color: var(--ink); padding: 6px 2px 2px; }
+.popen .ptl small { font-size: 11px; color: var(--muted); font-weight: 600; margin-left: 4px; }
+.sum4 .v small { font-size: 10.5px; font-weight: 700; margin-left: 1px; }
+.dl .it .t small { display: block; font-size: 9.5px; font-weight: 700; color: var(--muted); margin-top: 1px; }

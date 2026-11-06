@@ -348,9 +348,9 @@ const isPoop = (r) => r.d1 === '대변' || r.d1 === '둘다';
 const WARN_COLORS = ['흰색·회색', '빨강', '검정'];
 
 function morningWake(key) {
-  let w = null;
-  nightRecs(addDays(key, -1)).forEach((r) => { if (r.end && (!w || r.end > w)) w = r.end; });
-  return w;
+  let w = null, open = false;
+  nightRecs(addDays(key, -1)).forEach((r) => { if (!r.end) open = true; else if (!w || r.end > w) w = r.end; });
+  return open ? null : w;   // 다시 잠들어 아직 자는 중이면 아직 기상 아님(앞서 깬 건 '새벽 깸')
 }
 function dayNaps(key) { return dayRecs(key).filter((r) => r.type === 'sleep' && r.kind === '낮'); }
 /* 겹치는 잠(두 기기가 따로 기록한 경우 등)은 합쳐서 한 번만 센다. [시작,끝] 목록 → 합친 구간 */
@@ -491,13 +491,22 @@ function recText(r) {
 const TINT = { feed: 't-feed', sleep: 't-sleep', diaper: 't-diaper', bath: 't-bath', walk: 't-bath', food: 't-feed' };
 const recIcon = (r) => `<span class="ic ${TINT[r.type] || 't-other'}">${ART.icons[r.type === 'sleep' && !r.end ? 'sleep' : (TYPES[r.type] || {}).i || 'memo']}</span>`;
 /* 기록 한 줄 (누가 기록했는지는 목록에 안 보임 — 기록을 열면 수정 창에 보임) */
+/* 새벽 수유: 아침 기상 전 수유. 기상 기록이 없으면 밤 시간대·오전이면 새벽 수유 */
+const isDawnFeed = (r, mw) => (mw ? r.start < mw : isNightTime(r.start) && minOfDay(r.start) < 12 * 60);
 function recItem(r) {
+  if (r._wake) {   // 전날 밤잠에서 깬 시각(기록 자체는 잠든 날에 있음)
+    const s = r.r;
+    const pw = S._pd && S._pd.get(`w:${s.id}`);
+    return `<button class="item" data-act="edit" data-id="${esc(s.id)}"><span class="t">${hm(s.end)}</span><span class="ic t-bath">${ART.icons.wake}</span>
+      <span class="what"><span>${r.final ? '기상' : '새벽 깸'}</span><small>밤잠 ${hm(s.start)}~${hm(s.end)} · ${minTxt((s.end - s.start) / MIN)}</small>${pw ? `<span class="pdiff">${pw}</span>` : ''}</span></button>`;
+  }
   const x = recText(r);
+  if (S.tab === 'day' && r.type === 'feed' && isDawnFeed(r, S._dawnCut && S._dawnCut.key === dkey(r.start) ? S._dawnCut.mw : morningWake(dkey(r.start)))) { x.sub = x.sub ? `${x.t} · ${x.sub}` : x.t; x.t = '새벽 수유'; }
   const memo = r.type !== 'memo' && r.memo ? `<small>${esc(r.memo)}</small>` : '';
   const hot = x.c === 'c-danger' || x.c === 'c-over' ? x.c : '';
   return `<button class="item" data-act="edit" data-id="${esc(r.id)}">
     <span class="t">${hm(r.start)}</span>${recIcon(r)}
-    <span class="what"><span class="${hot}">${esc(x.t)}</span>${x.sub ? `<small>${esc(x.sub)}</small>` : ''}${memo}</span>
+    <span class="what"><span class="${hot}">${esc(x.t)}</span>${x.sub ? `<small>${esc(x.sub)}</small>` : ''}${memo}${S.tab === 'day' && S._pd && S._pd.get(r.id) ? `<span class="pdiff">${S._pd.get(r.id)}</span>` : ''}</span>
     ${x.warn ? '<span class="tag warn-tag">확인 필요</span>' : ''}</button>`;
 }
 
@@ -838,10 +847,17 @@ function viewDay() {
   const key = S.day, today = dkey(Date.now());
   const a = babyAge(key);
   const sm = daySummary(key), ns = nightStats(key);
-  const recs = dayRecs(key).filter((r) => !GROWTH_ONLY.has(r.type)).reverse();
+  // 밤잠에서 깬 시각을 따로 한 줄로: 마지막으로 깬 것은 '기상', 그 전(다시 잠든 경우)은 '새벽 깸'
+  // 예) 05:00 새벽 깸 → 05:10 새벽 수유 → 05:20 밤잠 → 07:00 기상. 목록은 아침부터 시간순
+  const a0 = dstart(key), a1 = dstart(addDays(key, 1)), mw = morningWake(key);
+  const wakes = sleeps().filter((r) => r.kind === '밤' && r.end && r.end >= a0 && r.end < a1 && minOfDay(r.end) < 12 * 60)
+    .map((r) => ({ _wake: true, r, start: r.end, final: r.end === mw }));
+  const recs = dayRecs(key).filter((r) => !GROWTH_ONLY.has(r.type)).concat(wakes).sort((x, y) => x.start - y.start || ((y._wake ? 1 : 0) - (x._wake ? 1 : 0)));
+  S._dawnCut = { key, mw };   // recItem '새벽 수유' 판단용
   const memo = S.memos[key];
+  const pd = planDiff(key); S._pd = pd.map;   // recItem이 '계획보다 N분' 표시에 씀
   const tileS = (ic, t, k, v) => `<div><div class="ic ${t}">${ART.icons[ic]}</div><div class="k">${k}</div><div class="v">${v}</div></div>`;
-  const shown = S.dayAll ? recs : recs.slice(0, 5);
+  const shown = S.dayAll ? recs : recs.slice(-5);   // 접었을 때는 최근 5건(순서는 시간순 그대로)
   return `<div class="daynav"><button data-act="day" data-d="-1" aria-label="이전 날">‹</button>
     <div class="d">${dayLabel(key)}<small>${a ? `${a.n}일째` : ''}${key === today ? ' · 오늘' : ''}</small></div>
     <button data-act="day" data-d="1" aria-label="다음 날" ${key >= today ? 'style="visibility:hidden"' : ''}>›</button></div>
@@ -849,12 +865,15 @@ function viewDay() {
     <div class="legend"><span><i style="background:var(--night)"></i>밤잠</span><span><i style="background:var(--nap)"></i>낮잠</span>
     <span><i style="background:var(--feed);height:3px"></i>수유</span><span><i style="background:var(--bath);height:3px"></i>목욕</span></div></div>
   <div class="sharebar"><button class="pill" data-act="shareDay">📤 이 날 요약 공유</button></div>
-  <div class="sum4">${tileS('feed', 't-feed', '수유', `${sm.feedN}회·${sm.feedMl}`)}${tileS('sleep', 't-sleep', '낮잠', `${sm.napN}회·${minTxt(sm.napMin)}`)}
-    ${tileS('sleep', 't-sleep', `밤잠${ns.count > 1 ? ` (최장 ${minTxt(ns.longest)})` : ''}`, ns.tot ? minTxt(ns.tot) : '-')}${tileS('diaper', 't-diaper', '기저귀', `소${sm.pee}·대${sm.poo}`)}</div>
-  <div class="card"><div class="h">계획 대비<span>${esc(planFor(key).name)} 일정</span></div>${compareList(key)}</div>
+  <div class="sum4">${tileS('feed', 't-feed', `수유 ${sm.feedN}회`, `${sm.feedMl}<small>ml</small>`)}${tileS('sleep', 't-sleep', `낮잠 ${sm.napN}회`, sm.napMin ? durHtml(sm.napMin) : '-')}
+    ${tileS('sleep', 't-sleep', '밤잠', ns.tot ? durHtml(ns.tot) : '-')}${tileS('diaper', 't-diaper', '기저귀', `소${sm.pee}·대${sm.poo}`)}</div>
   <div class="card list"><div class="h">기록 전체 · ${recs.length}건<button class="chip add xs" data-act="addPast">＋ 기록 추가</button></div>
+    ${pd.next ? `<div class="pnext">다음 계획 · <b>${esc(pd.next.n)} ${hm(pd.next.t)}쯤</b></div>` : ''}
+    <button class="psum" data-act="dayMore" data-k="planOpen"><span class="k">계획 대비<small>${esc(planFor(key).name)}</small></span><span class="v">${pd.line}</span><span class="ar">${S.planOpen ? '▴' : '›'}</span></button>
+    ${S.planOpen ? `<div class="popen"><div class="ptl">일정표와 비교 <small>낮잠은 깨시, 수유는 텀 기준 ±15분</small></div>${compareList(key)}</div>` : ''}
+    ${recs.length > 5 && !S.dayAll ? `<button class="more" data-act="dayMore" data-k="dayAll">앞의 기록 ${recs.length - 5}건 더 보기 ▴</button>` : ''}
     ${recs.length ? shown.map(recItem).join('') : '<div class="empty">기록이 없어요</div>'}
-    ${recs.length > 5 ? `<button class="more" data-act="dayMore" data-k="dayAll">${S.dayAll ? '접기 ▴' : `${recs.length - 5}건 더 보기 ▾`}</button>` : ''}</div>
+    ${recs.length > 5 && S.dayAll ? '<button class="more" data-act="dayMore" data-k="dayAll">접기 ▾</button>' : ''}</div>
   <div class="card"><div class="h">한 줄 메모</div>
     <input id="daymemo" class="memo-in" maxlength="120" placeholder="오늘 있었던 일을 한 줄로 남겨보세요" value="${esc(memo ? memo.text : '')}" data-base="${esc(memo ? memo.text : '')}" data-key="${key}"></div>`;
 }
@@ -892,57 +911,89 @@ function clockSvg(key, sm, mini) {
   return `<svg viewBox="0 0 240 240" width="100%" height="100%" role="img" aria-label="${dayLabel(key)} 24시간 기록">${g}</svg>`;
 }
 
-function diffPill(d, kind) {
+/* 계획 대비(8차): 낮잠은 '깨시', 수유는 '수유텀'이 목표대로였는지(±15분이면 계획대로) 본다.
+   한 번 밀려도 그 뒤는 각자 간격으로 평가 → 하루 종일 '늦게'로 찍히지 않게. 기상·첫 수유·목욕·밤잠 시작만 시각 비교(±30분) */
+const TOL_GAP = 15, TOL_CLOCK = 30;
+function diffPill(d, kind, tol = 10) {
   const ad = Math.abs(Math.round(d));
-  if (ad <= 10) return `<span class="pill ok">${ad === 0 ? '정확' : '비슷'}</span>`;
-  const w = kind === 'len' ? (d > 0 ? '길게' : '짧게') : (d > 0 ? '늦게' : '일찍');
+  if (ad <= tol) return '<span class="pill ok">계획대로</span>';
+  const w = kind === 'gap' ? (d > 0 ? '길게' : '짧게') : (d > 0 ? '늦게' : '일찍');
   return `<span class="pill over">${minTxt(ad)} ${w}</span>`;
 }
-/* 계획 대비: 시간순 목록. 계획과 실제는 가까운 시각끼리 짝지음(한 번 빠져도 뒤가 밀리지 않게) */
+const offWord = (o) => `${minTxt(Math.abs(Math.round(o.d)))} ${o.kind === 'gap' ? (o.d > 0 ? '길게' : '짧게') : (o.d > 0 ? '늦게' : '일찍')}`;
 function compareRows(key) {
   const P = planFor(key), now = Date.now(), today = dkey(now), rows = [];
   const nowM = key === today ? minOfDay(now) : 1e9;
-  const row = (o) => rows.push(o);
   const yet = (m) => (key === today && m > nowM ? '<span class="pill muted">아직</span>' : '<span class="pill muted">-</span>');
-  const mw = morningWake(key);
-  row({ m: P.wake, ic: 'wake', t: 't-bath', n: '기상', p: `계획 ${hmM(P.wake)}`, a: mw ? hm(mw) : '', pill: mw ? diffPill(minOfDay(mw) - P.wake + (dkey(mw) !== key ? -1440 : 0)) : yet(P.wake) });
-  const pairUp = (plans, acts, tOf, win) => {
-    const cand = [];
-    plans.forEach((p, i) => acts.forEach((r) => { const d = Math.abs(minOfDay(r.start) - tOf(p)); if (d <= win) cand.push({ i, r, d }); }));
-    cand.sort((a, b) => a.d - b.d);
-    const by = {}, used = new Set();
-    cand.forEach((c) => { if (by[c.i] || used.has(c.r.id)) return; by[c.i] = c.r; used.add(c.r.id); });
-    return { by, used };
-  };
-  const naps = dayNaps(key);
-  const np = pairUp(P.naps, naps, (p) => p.s, 120);
+  // o: { m(정렬용 분), ic, t, n(이름), p(목표), a(실제), d(차이 분), kind('gap'|'clock'), tol, rid(목록 기록 id), why(목록에 붙일 말) }
+  const row = (o) => { if (o.d != null) { o.off = Math.abs(o.d) > o.tol; o.pill = diffPill(o.d, o.kind, o.tol); } else if (o.pill == null) o.pill = yet(o.m); rows.push(o); };
+  // 기상(시각)
+  const mw = morningWake(key), mwr = mw ? nightRecs(addDays(key, -1)).find((r) => r.end === mw) : null;
+  const dW = mw ? minOfDay(mw) - P.wake + (dkey(mw) !== key ? -1440 : 0) : null;
+  row({ m: mw ? minOfDay(mw) + (dkey(mw) !== key ? -1440 : 0) : P.wake, ic: 'wake', t: 't-bath', n: '기상', p: `계획 ${hmM(P.wake)}`, a: mw ? hm(mw) : '', d: dW, kind: 'clock', tol: TOL_CLOCK,
+    rid: mwr && dkey(mw) === key ? `w:${mwr.id}` : null, why: `계획 ${hmM(P.wake)}보다` });
+  // 낮잠: 순서대로 짝(토막잠 제외), 깨시 = 잠든 시각 − 바로 앞 잠에서 깬 시각
+  const allNaps = dayNaps(key), naps = allNaps.filter((r) => r.end || r.start < now).filter(countsAsNap);
+  // 바로 앞 잠에서 깬 시각(토막잠은 건너뜀 — 짝지을 때와 같은 기준). 기상 기록이 없으면 이 날 안의 잠만
+  const prevWake = (t) => { let w = mw && mw <= t ? mw : null; sleeps().forEach((r) => { if (r.end && r.end <= t && r.end > (w || 0) && r.end >= (mw ? dstart(key) - 12 * HOUR : dstart(key)) && (r.kind === '밤' || countsAsNap(r))) w = r.end; }); return w; };
   P.naps.forEach((pn, i) => {
-    const r = np.by[i], plan = `계획 ${hmM(pn.s)} · ${minTxt(pn.e - pn.s)}`;
-    if (!r) { row({ m: pn.s, ic: 'sleep', t: 't-sleep', n: `낮잠${i + 1}`, p: plan, a: '', pill: yet(pn.s) }); return; }
+    const r = naps[i], goal = P.ww[i];
+    if (!r) { row({ m: pn.s, ic: 'sleep', t: 't-sleep', n: `낮잠${i + 1}`, p: `깨시 목표 ${minTxt(goal)}`, a: '' }); return; }
+    // 바로 앞에 토막잠이 있으면(30분 안) 처음 재운 시각(토막잠 시작)까지를 깨시로 — 제때 재웠는데 금방 깬 날을 '늦게'로 보지 않게
+    let st0 = r.start;
+    for (;;) { const sh = allNaps.find((x) => !countsAsNap(x) && x.end && x.end <= st0 && st0 - x.end <= 30 * MIN); if (!sh) break; st0 = sh.start; }
+    const pw = prevWake(st0), ww = pw ? (st0 - pw) / MIN : null;
     const len = (sleepEnd(r, now) - r.start) / MIN;
-    const lenPill = r.end && Math.abs(len - (pn.e - pn.s)) > 10 ? ` ${diffPill(len - (pn.e - pn.s), 'len')}` : '';
-    row({ m: pn.s, ic: 'sleep', t: 't-sleep', n: `낮잠${i + 1}`, p: plan, a: `${hm(r.start)} · ${r.end ? minTxt(len) : '진행 중'}`, pill: diffPill(minOfDay(r.start) - pn.s) + lenPill });
+    row({ m: minOfDay(r.start), ic: 'sleep', t: 't-sleep', n: `낮잠${i + 1}`, p: `깨시 목표 ${minTxt(goal)}`,
+      a: `${hm(r.start)} · ${r.end ? minTxt(len) : '진행 중'}${ww != null ? `<br><small>깨시 ${minTxt(ww)}</small>` : ''}`,
+      d: ww != null ? ww - goal : null, kind: 'gap', tol: TOL_GAP, rid: r.id, why: ww != null ? `깨시 ${minTxt(ww)} (목표 ${minTxt(goal)})` : '', pill: ww == null ? '' : undefined });
   });
-  naps.filter((r) => !np.used.has(r.id)).forEach((r) => row({ m: minOfDay(r.start), ic: 'sleep', t: 't-sleep', n: '추가 낮잠', p: '계획 없음', a: `${hm(r.start)} · ${minTxt((sleepEnd(r, now) - r.start) / MIN)}`, pill: '' }));
-  const isDawn = (r) => isNightTime(r.start) && minOfDay(r.start) < 12 * 60;
-  const feeds = dayRecs(key).filter((r) => r.type === 'feed' && !isDawn(r));
-  const fp = pairUp(P.feeds, feeds, (p) => p.t, 120);
+  naps.slice(P.naps.length).forEach((r) => row({ m: minOfDay(r.start), ic: 'sleep', t: 't-sleep', n: '추가 낮잠', p: '계획 없음', a: `${hm(r.start)} · ${minTxt((sleepEnd(r, now) - r.start) / MIN)}`, pill: '' }));
+  allNaps.filter((r) => !countsAsNap(r)).forEach((r) => row({ m: minOfDay(r.start), ic: 'sleep', t: 't-sleep', n: '토막잠', p: `${NAP_SHORT}분 미만`, a: `${hm(r.start)} · ${minTxt((r.end - r.start) / MIN)}`, pill: '' }));
+  // 수유: 순서대로 짝(새벽 수유 제외). 첫 수유는 시각, 그 뒤는 바로 앞 수유와의 텀(목표 = 일정표 앞 수유와의 간격)
+  const isDawn = (r) => isDawnFeed(r, mw);
+  const allFeeds = dayRecs(key).filter((r) => r.type === 'feed'), dayFeeds = allFeeds.filter((r) => !isDawn(r));
+  // 앞 수유와 간격이 목표 텀의 절반도 안 되면 '추가 수유'(짝 순번을 쓰지 않음 → 그 뒤가 줄줄이 밀리지 않게)
+  const feeds = [], extraFeeds = [];
+  dayFeeds.forEach((r) => {
+    const i = feeds.length, prev = feeds[i - 1];
+    if (i >= P.feeds.length) { extraFeeds.push(r); return; }
+    if (prev && i > 0 && (r.start - prev.start) / MIN < (P.feeds[i].t - P.feeds[i - 1].t) / 2) { extraFeeds.push(r); return; }
+    feeds.push(r);
+  });
   const ml = (r) => `${esc(r.value)}ml`;
   P.feeds.forEach((pf, i) => {
-    const r = fp.by[i];
-    row({ m: pf.t, ic: 'feed', t: 't-feed', n: esc(pf.l), p: `계획 ${hmM(pf.t)}`, a: r ? `${hm(r.start)} · ${ml(r)}` : '', pill: r ? diffPill(minOfDay(r.start) - pf.t) : yet(pf.t) });
+    const r = feeds[i];
+    if (!r) { row({ m: pf.t, ic: 'feed', t: 't-feed', n: esc(pf.l), p: i ? `텀 목표 ${minTxt(pf.t - P.feeds[i - 1].t)}` : `계획 ${hmM(pf.t)}`, a: '' }); return; }
+    if (!i) { row({ m: minOfDay(r.start), ic: 'feed', t: 't-feed', n: esc(pf.l), p: `계획 ${hmM(pf.t)}`, a: `${hm(r.start)} · ${ml(r)}`, d: minOfDay(r.start) - pf.t, kind: 'clock', tol: TOL_CLOCK, rid: r.id, why: `계획 ${hmM(pf.t)}보다` }); return; }
+    const prev = feeds[i - 1], goal = pf.t - P.feeds[i - 1].t, gap = prev ? (r.start - prev.start) / MIN : null;
+    row({ m: minOfDay(r.start), ic: 'feed', t: 't-feed', n: esc(pf.l), p: `텀 목표 ${minTxt(goal)}`, a: `${hm(r.start)} · ${ml(r)}${gap != null ? `<br><small>텀 ${minTxt(gap)}</small>` : ''}`,
+      d: gap != null ? gap - goal : null, kind: 'gap', tol: TOL_GAP, rid: r.id, why: gap != null ? `수유텀 ${minTxt(gap)} (목표 ${minTxt(goal)})` : '', pill: gap == null ? '' : undefined });
   });
-  feeds.filter((r) => !fp.used.has(r.id)).forEach((r) => row({ m: minOfDay(r.start), ic: 'feed', t: 't-feed', n: '추가 수유', p: '계획 없음', a: `${hm(r.start)} · ${ml(r)}`, pill: '' }));
-  dayRecs(key).filter((r) => r.type === 'feed' && isDawn(r)).forEach((r) => row({ m: minOfDay(r.start) - 1440, ic: 'feed', t: 't-feed', n: '새벽 수유', p: '밤중', a: `${hm(r.start)} · ${ml(r)}`, pill: '' }));
+  extraFeeds.forEach((r) => row({ m: minOfDay(r.start), ic: 'feed', t: 't-feed', n: '추가 수유', p: '계획 없음', a: `${hm(r.start)} · ${ml(r)}`, pill: '' }));
+  // 새벽 수유는 비교 대상이 아니라 표에서 뺌(기록 목록에 '새벽 수유'로 나옴)
   if (P.bath != null) {
     const b = dayRecs(key).find((r) => r.type === 'bath');
-    row({ m: P.bath, ic: 'bath', t: 't-bath', n: '목욕', p: `계획 ${hmM(P.bath)}`, a: b ? hm(b.start) : '', pill: b ? diffPill(minOfDay(b.start) - P.bath) : yet(P.bath) });
+    row({ m: P.bath, ic: 'bath', t: 't-bath', n: '목욕', p: `계획 ${hmM(P.bath)}`, a: b ? hm(b.start) : '', d: b ? minOfDay(b.start) - P.bath : null, kind: 'clock', tol: TOL_CLOCK, rid: b ? b.id : null, why: `계획 ${hmM(P.bath)}보다` });
   }
   const ns = nightStats(key), first = nightRecs(key)[0];
-  row({ m: P.bed, ic: 'sleep', t: 't-sleep', n: '밤잠 시작', p: `계획 ${hmM(P.bed)}`, a: first ? hm(first.start) : '',
-    pill: first ? diffPill(minOfDay(first.start) - P.bed + (minOfDay(first.start) < 720 ? 1440 : 0)) : yet(P.bed) });
+  const dB = first ? minOfDay(first.start) - P.bed + (minOfDay(first.start) < 720 ? 1440 : 0) : null;
+  row({ m: P.bed, ic: 'sleep', t: 't-sleep', n: '밤잠 시작', p: `계획 ${hmM(P.bed)}`, a: first ? hm(first.start) : '', d: dB, kind: 'clock', tol: TOL_CLOCK,
+    rid: first && dkey(first.start) === key ? first.id : null, why: `계획 ${hmM(P.bed)}보다` });
   if (ns.count) row({ m: 9999, ic: 'sleep', t: 't-sleep', n: '밤잠', p: `최장 ${minTxt(ns.longest)}`, a: `총 ${minTxt(ns.tot)}`, pill: '' });
   return rows.sort((x, y) => x.m - y.m);
+}
+/* 기록 목록 위 계획 요약 한 줄 + 기록 id → 어긋난 이유(계획대로 범위를 넘은 것만) */
+function planDiff(key) {
+  const rows = compareRows(key), map = new Map();
+  const judged = rows.filter((o) => o.d != null), off = judged.filter((o) => o.off).sort((a, b) => Math.abs(b.d) - Math.abs(a.d));
+  off.forEach((o) => { if (o.rid) map.set(o.rid, o.kind === 'gap' ? `${o.why} · ${offWord(o)}` : `${o.why} ${offWord(o)}`); });
+  // 오늘이면 홈 '오늘 남은 일정'과 같은 예측(실제 기록 따라 움직이는 일정)의 첫 항목
+  let next = null;
+  if (key === dkey(Date.now())) { try { const st = statusInfo(); if (st.mode !== 'night' && st.mode !== 'nightwake') next = planItems(st)[0] || null; } catch (e) {} }
+  const bits = off.slice(0, 2).map((o) => `${o.n} ${o.kind === 'gap' ? (o.ic === 'feed' ? '텀 ' : '깨시 ') : ''}${offWord(o)}`);
+  const line = !judged.length ? '아직 비교할 기록이 없어요' : `${judged.length}개 중 <b>${judged.length - off.length}개 계획대로</b>${bits.length ? ` · ${bits.join(' · ')}${off.length > 2 ? ` 외 ${off.length - 2}` : ''}` : ''}`;
+  return { map, line, next };
 }
 function compareList(key) {
   const rows = compareRows(key), shown = S.planAll ? rows : rows.slice(0, 6);
@@ -1077,7 +1128,7 @@ function weekTableCard(keys, today) {
 function trendData(today) {
   const n = S.pat.period;
   const keys = [...Array(n)].map((_, i) => addDays(today, i - n));
-  const firstDayFeed = (key) => dayRecs(key).find((r) => r.type === 'feed' && !(isNightTime(r.start) && minOfDay(r.start) < 12 * 60));
+  const firstDayFeed = (key) => { const mw = morningWake(key); return dayRecs(key).find((r) => r.type === 'feed' && !isDawnFeed(r, mw)); };   // 하루 탭과 같은 새벽 수유 기준
   return keys.map((key) => {
     const sm = daySummary(key), ns = nightStats(key), mw = morningWake(key), ff = firstDayFeed(key);
     const bed = nightRecs(key)[0];
@@ -1622,7 +1673,7 @@ let lookT = 0;
 const ACTIONS = {
   tab(el) {
     S.tab = el.dataset.tab;
-    if (S.tab === 'day') { S.day = dkey(Date.now()); S.dayAll = false; S.planAll = false; }
+    if (S.tab === 'day') { S.day = dkey(Date.now()); S.dayAll = false; S.planAll = false; S.planOpen = false; }
     // 하단 탭을 누르면 패턴·성장은 첫 화면부터
     if (el.closest('#tabs')) { if (S.tab === 'pattern') S.pat.sub = 'week'; if (S.tab === 'growth') GR.sub = 'growth'; if (S.tab === 'cal') { CAL.m = null; CAL.sel = null; } }
     closeToast(); render(); window.scrollTo(0, 0);
@@ -1696,7 +1747,7 @@ const ACTIONS = {
   day(el) {
     const n = addDays(S.day, Number(el.dataset.d));
     if (n > dkey(Date.now())) return;
-    S.day = n; S.dayAll = false; S.planAll = false; render();
+    S.day = n; S.dayAll = false; S.planAll = false; S.planOpen = false; render();
     ensureRange(n);
   },
   pin(el) {
@@ -1716,7 +1767,7 @@ const ACTIONS = {
     ensureRange(patKeys()[0]);
   },
   patToggle(el) { const t = patToggles(); t[el.dataset.k] = !t[el.dataset.k]; LS.set('patToggles', t); render(); },
-  patDay(el) { S.day = el.dataset.d; S.tab = 'day'; S.dayAll = false; S.planAll = false; closeToast(); render(); window.scrollTo(0, 0); ensureRange(S.day); },
+  patDay(el) { S.day = el.dataset.d; S.tab = 'day'; S.dayAll = false; S.planAll = false; S.planOpen = false; closeToast(); render(); window.scrollTo(0, 0); ensureRange(S.day); },
   patPeriod(el) { S.pat.period = Number(el.dataset.n); render(); ensureRange(addDays(dkey(Date.now()), -S.pat.period - 7)); },
   patTrend(el) { S.pat.trend = el.dataset.t; render(); },
   addPast() {

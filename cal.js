@@ -71,7 +71,7 @@ function viewCal() {
   const upRow = (x) => {
     const dd = dDay(x.k), bar = { me: '#6B8DE0', an: '#E77FA6', hl: '#5BB98A' }[x.c];
     const act = x.r ? `data-act="calEdit" data-id="${esc(x.r.id)}"` : `data-act="calSel" data-k="${x.k}"`;
-    return `<div class="it" ${act}><span class="bar" style="background:${bar}"></span><span class="t">${shortDate(x.k)}</span>
+    return `<div class="it" ${act}><span class="bar" style="background:${bar}"></span><span class="t">${calDate(x.k)}</span>
       <span class="tt"><b>${esc(x.t)}</b><small>${dd === 0 ? '오늘' : `D-${dd}`}${x.time ? ` · ${x.time}` : ''}${x.c !== 'me' ? ' · 자동 표시' : ''}</small></span></div>`;
   };
   return `<div class="calv">
@@ -85,6 +85,11 @@ function viewCal() {
       <div class="dl-b"><button class="chip add" data-act="calAdd">＋ 이 날 일정 추가</button>${CAL.sel <= today ? '<button class="chip" data-act="calDay">하루 기록 보기 ›</button>' : ''}</div></div>
     ${up.length ? `<div class="card dl"><div class="h">다가오는 일정</div>${up.map(upRow).join('')}</div>` : ''}
   </div><button class="fab" data-act="calAdd" aria-label="일정 추가">＋</button>`;
+}
+/* 다가오는 일정 날짜: 모두 '월/일'로 통일, 올해가 아니면 아래 줄에 작게 연도 */
+function calDate(k) {
+  const [y, m, d] = k.split('-').map(Number);
+  return `${m}/${d}${y !== new Date().getFullYear() ? `<small>${y}년</small>` : ''}`;
 }
 function calSheet(rec, dayKey) {
   const r0 = rec ? { ...rec } : null;
