@@ -514,3 +514,4 @@ html[data-theme="dark"] .item .pdiff { color: #FFDFA6; background: #46381F; }
 .popen .ptl small { font-size: 11px; color: var(--muted); font-weight: 600; margin-left: 4px; }
 .sum4 .v small { font-size: 10.5px; font-weight: 700; margin-left: 1px; }
 .dl .it .t small { display: block; font-size: 9.5px; font-weight: 700; color: var(--muted); margin-top: 1px; }
+.toast .acts button { min-width: 0; white-space: nowrap; }

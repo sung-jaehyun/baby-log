@@ -1598,7 +1598,7 @@ function toast(rec, mode, label, opts = {}) {
   t.dataset.id = rec.id;
   const detail = String(label).replace(/ 기록했어요$/, '');
   t.innerHTML = `<div class="msg"><span class="ok-ic">${CHECK_SVG}</span><div><b>저장됐어요</b><small><span>${esc(detail)}</span> · <span id="toastTime">${hm(rec[field])}</span></small></div></div>
-    <div class="acts"><button data-t="-5">−5분</button><button data-t="-10">−10분</button><button data-t="edit">시각 수정</button><button data-t="undo" class="x">취소</button></div>
+    <div class="acts"><button data-t="-1">−1분</button><button data-t="-5">−5분</button><button data-t="-10">−10분</button><button data-t="edit">시각 수정</button><button data-t="undo" class="x">취소</button></div>
     <div class="timer"><i></i></div>`;
   t.addEventListener('click', (e) => {
     const b = e.target.closest('[data-t]'); if (!b) return;
