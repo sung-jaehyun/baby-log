@@ -561,3 +561,58 @@ html[data-theme="dark"] .item .pdiff { color: #FFDFA6; background: #46381F; }
 button.more { min-height: 44px; }
 html[data-theme="dark"] .cd.sun .n { color: #E0645F; } html[data-theme="dark"] .cd.sat .n { color: #5A8FD6; }
 .ttable small { white-space: normal; }
+
+/* ══ 11차(2026-11-14): 홈 새 디자인 '하루의 하늘' ══
+   상태 카드 배경이 상태를 말한다: 깨어 있음 = 테마색 아침 하늘 + 햇살, 낮잠 = 연보라 구름, 밤잠 = 남색 밤하늘, 밤중 깸 = 달빛 든 밤하늘.
+   사진은 흰 테두리 틀, 캐릭터는 틀 없이 하늘 위에. 기록 버튼은 종류 색 타일. 다크 테마의 상태 카드 색은 기존 그대로 */
+:root { --shadow: none; --sky: linear-gradient(165deg, #FFE7D3 0%, #FAD6E3 52%, #D9C8F5 100%); --sky-ink: #453B5C; }
+html[data-theme="peach"] { --sky: linear-gradient(165deg, #FFF0E3, #FFD6C2); --sky-ink: #5A3A2E; }
+html[data-theme="mint"] { --sky: linear-gradient(165deg, #E3F6EC, #C5EAD9); --sky-ink: #2F4A40; }
+html[data-theme="sky"] { --sky: linear-gradient(165deg, #E6F1FC, #C6DDF5); --sky-ink: #2C4560; }
+html[data-theme="lemon"] { --sky: linear-gradient(165deg, #FFF8DC, #FBE8A6); --sky-ink: #54461A; }
+.hero { position: relative; overflow: hidden; border-radius: 26px; }
+html:not([data-theme="dark"]) .hero { box-shadow: none; color: var(--sky-ink);
+  background: radial-gradient(110px 110px at 92% -12%, rgba(255,226,150,.9), rgba(255,226,150,0) 70%), var(--sky); }
+html:not([data-theme="dark"]) .hero.m-nap { color: #3F3866;
+  background: radial-gradient(90px 44px at 80% 12%, rgba(255,255,255,.7), rgba(255,255,255,0) 70%), linear-gradient(165deg, #E6E0FA 0%, #CBBEF2 100%); }
+html:not([data-theme="dark"]) .hero.m-night, html:not([data-theme="dark"]) .hero.m-wake { color: #fff;
+  background: radial-gradient(1.6px 1.6px at 62% 12%, #fff, transparent), radial-gradient(1.4px 1.4px at 78% 26%, #fff, transparent), radial-gradient(1.8px 1.8px at 92% 10%, #FFE9A8, transparent), linear-gradient(170deg, #25245C 0%, #40378A 70%, #5B4AA6 100%); }
+html:not([data-theme="dark"]) .hero.m-wake {
+  background: radial-gradient(100px 100px at 92% -10%, rgba(255,214,140,.55), rgba(255,214,140,0) 70%), radial-gradient(1.6px 1.6px at 62% 14%, #fff, transparent), linear-gradient(170deg, #25245C 0%, #40378A 60%, #7A5A9E 100%); }
+.hero .st { font-size: 16px; }
+html:not([data-theme="dark"]) .hero .st .tag2 { background: rgba(255,255,255,.55); }
+html:not([data-theme="dark"]) .hero.m-night .st .tag2, html:not([data-theme="dark"]) .hero.m-wake .st .tag2 { background: rgba(255,255,255,.2); }
+/* 사진·캐릭터 */
+.ph.big, .hero.m-night .ph.big, .hero.m-wake .ph.big, html[data-theme="dark"] .hero .ph.big { background: none; overflow: visible; }
+.ph.big:has(img), .hero.m-night .ph.big:has(img), .hero.m-wake .ph.big:has(img), html[data-theme="dark"] .hero .ph.big:has(img) { overflow: hidden; border-radius: 22px; border: 3px solid rgba(255,255,255,.92); background: #fff; }
+.ph.big > img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.ph.big .badge { display: none; }
+/* 잠·수유 칸: 하늘이 비치는 반투명 */
+.tile .hd i { display: none; }
+.tile .v { font-size: 22px; }
+.bar2 { height: 6px; }
+html:not([data-theme="dark"]) .hero .tile { background: rgba(255,255,255,.72); color: inherit; }
+html:not([data-theme="dark"]) .hero .bar2 { background: rgba(0,0,0,.08); }
+html:not([data-theme="dark"]) .hero.m-night .tile, html:not([data-theme="dark"]) .hero.m-wake .tile { background: rgba(255,255,255,.14); color: #fff; }
+html:not([data-theme="dark"]) .hero.m-night .bar2, html:not([data-theme="dark"]) .hero.m-wake .bar2 { background: rgba(255,255,255,.2); }
+html:not([data-theme="dark"]) .hero.m-night .tS .n, html:not([data-theme="dark"]) .hero.m-wake .tS .n { color: #D9D3FF; }
+html:not([data-theme="dark"]) .hero.m-night .tF .n, html:not([data-theme="dark"]) .hero.m-wake .tF .n { color: #FFD98A; }
+html:not([data-theme="dark"]) .hero.m-night .bar2 b[style*="--night"], html:not([data-theme="dark"]) .hero.m-night .bar2 b[style*="--nap"],
+html:not([data-theme="dark"]) .hero.m-wake .bar2 b[style*="--night"], html:not([data-theme="dark"]) .hero.m-wake .bar2 b[style*="--nap"] { background: #B9AEF2 !important; }
+html:not([data-theme="dark"]) .hero.m-night .tile.empty-t .v, html:not([data-theme="dark"]) .hero.m-wake .tile.empty-t .v { color: #D9D3FF; }
+/* 기록 버튼: 종류 색 타일 */
+.btns { gap: 8px; margin-bottom: 8px; }
+.btn-big { box-shadow: none; border-radius: 20px; }
+.btn-big .ic { background: none !important; }
+.btn-big .ic svg { width: 29px; height: 29px; }
+.btn-big[data-act="feed"] { background: var(--tf); } .btn-big[data-act="sleep"] { background: var(--ts); }
+.btn-big[data-act="diaper"] { background: var(--td); } .btn-big[data-act="quick"] { background: var(--tb); }
+html:not([data-theme="dark"]) .btn-big.on { background: #40378A; color: #fff; }
+html[data-theme="dark"] .btn-big.on { background: var(--hero); }
+/* 작은 기록 버튼: 한 줄 띠 */
+.smalls { background: var(--card); border-radius: 18px; padding: 0 4px; gap: 0; }
+.btn-sm { background: none; box-shadow: none; flex-direction: row; gap: 5px; font-size: 12.5px; color: var(--text); }
+.btn-sm svg { width: 18px; height: 18px; }
+.leg i { border-radius: 50%; }
+.home.tighter .btn-big { padding: 5px 0 4px; }
+.home.tighter .btns { gap: 6px; }
