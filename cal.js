@@ -84,7 +84,7 @@ function viewCal() {
       ${sl.length ? sl.map(row).join('') : '<div class="empty">일정이 없어요</div>'}
       <div class="dl-b"><button class="chip add" data-act="calAdd">＋ 이 날 일정 추가</button>${CAL.sel <= today ? '<button class="chip" data-act="calDay">하루 기록 보기 ›</button>' : ''}</div></div>
     ${up.length ? `<div class="card dl"><div class="h">다가오는 일정</div>${up.map(upRow).join('')}</div>` : ''}
-  </div><button class="fab" data-act="calAdd" aria-label="일정 추가">＋</button>`;
+  </div>`;
 }
 /* 다가오는 일정 날짜: 모두 '월/일'로 통일, 올해가 아니면 아래 줄에 작게 연도 */
 function calDate(k) {

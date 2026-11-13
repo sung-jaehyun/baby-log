@@ -561,12 +561,23 @@ function fitClock() {
   const wMax = Math.floor(inner - (leg ? leg.offsetWidth : 0) - parseFloat(cs.columnGap || 0) - 12);
   const hi = Math.max(110, Math.min(CLOCK_MAX, wMax)), lo = Math.min(CLOCK_MIN, hi);
   // #app 아래 여백이 하단 탭 높이만큼이라, 여백까지 포함해 화면 높이에 맞추면 탭에 가리지 않는다
-  for (let i = 0; i < 3; i++) {
-    const room = window.innerHeight / z - (app.offsetTop + app.offsetHeight);
-    const cur = c.offsetHeight;
-    const next = Math.round(Math.max(lo, Math.min(hi, cur + room)));
-    if (Math.abs(next - cur) < 2) break;
-    app.style.setProperty('--cs', `${next}px`);
+  const room = () => window.innerHeight / z - (app.offsetTop + app.offsetHeight);
+  const fit = () => {
+    for (let i = 0; i < 3; i++) {
+      const cur = c.offsetHeight;
+      const next = Math.round(Math.max(lo, Math.min(hi, cur + room())));
+      if (Math.abs(next - cur) < 2) break;
+      app.style.setProperty('--cs', `${next}px`);
+    }
+  };
+  // 시계를 최소로 줄여도 넘치면(큰 글씨·낮은 화면) 홈을 단계적으로 줄인다:
+  // tight = 일정 칸 제목 숨김 + 마지막 기록 한 줄, tighter = 여백·버튼도 조금 줄임
+  const home = $('.home');
+  if (home) home.classList.remove('tight', 'tighter');
+  fit();
+  for (const k of ['tight', 'tighter']) {
+    if (!home || room() >= -1) break;
+    home.classList.add(k); fit();
   }
 }
 // 글씨 파일이 늦게 도착하면 글자 크기가 바뀌므로 다시 맞춤
@@ -631,7 +642,7 @@ function statusCard(st) {
     ${pct == null ? '' : `<div class="bar2"><b style="width:${pct.toFixed(1)}%;background:${color}"></b></div>`}<div class="n">${n}</div></div>`;
   const none = (cls, ico, name, msg) => `<div class="tile t${cls} empty-t"><div class="hd"><i>${ART.icons[ico]}</i>${name}</div><div class="v">${msg}</div></div>`;
   const fi = st.feedInfo;
-  const feedT = fi ? tile('F', 'feed', '수유한 지', durHtml(fi.el), fi.pct, fi.color === 'var(--nap)' ? 'var(--feed)' : fi.color, `다음 ${esc((nextFeed(st) || { n: '수유' }).n === '막수' ? '막수' : '수유')} ${hm((nextFeed(st) || { t: fi.pred }).t)}쯤`)
+  const feedT = fi ? tile('F', 'feed', '수유 후', durHtml(fi.el), fi.pct, fi.color === 'var(--nap)' ? 'var(--feed)' : fi.color, `다음 ${esc((nextFeed(st) || { n: '수유' }).n === '막수' ? '막수' : '수유')} ${hm((nextFeed(st) || { t: fi.pred }).t)}쯤`)
     : none('F', 'feed', '수유', '기록이 아직 없어요');
   const card = (title, tag, sub, sleepT, cls = '') => `<div class="hero ${cls}"><div class="hbody">${phBig}<div class="hright">
       <div><div class="st">${title}${tag ? `<span class="tag2">${tag}</span>` : ''}</div><div class="st-sub">${sub}</div></div>
@@ -658,12 +669,12 @@ function statusCard(st) {
     // 일정표 기상 3시간 전부터(새벽)만 '아침 기상' 버튼: 아이가 그대로 하루를 시작하면 눌러서 오늘 일정을 계산
     const morning = at(addDays(nightOf(st.last), 1), st.P.raw.wake) - Date.now() < 3 * HOUR;
     return card('밤중에 깼어요', '🌗 밤중', morning ? `${hm(st.last.end)} 깸 · <button class="fixb" data-act="morningWake" data-id="${esc(st.last.id)}">아침 기상이에요</button>` : `${hm(st.last.end)} 깸 · 다시 재우면 "잠 시작"`,
-      tile('S', 'wake', '잠에서 깬 지', durHtml(st.el), null, '', '다시 재우면 잠 시작'), 'm-wake');
+      tile('S', 'wake', '깬 지', durHtml(st.el), null, '', '다시 재우면 잠 시작'), 'm-wake');
   }
   // 어젯밤 잠 기록이 없음(마지막 잠이 어제 낮잠): 밤잠을 넣어야 오늘 일정을 계산할 수 있음
   const noNight = st.lastKind === '낮' && st.lastEnd && dkey(st.lastEnd) !== dkey(Date.now());
   return card(`${who} 지금 깨어 있어요`, '☀️ 깸', noNight ? `<span class="do over">어젯밤 잠 기록이 없어요</span> <button class="fixb" data-act="addNight">밤잠 넣기</button>` : todoLine(st),
-    tile('S', 'sleep', '잠에서 깬 지', durHtml(st.el), st.pct, st.color === 'var(--nap)' ? 'var(--accent)' : st.color, `${st.next} ${hm(st.pred)}쯤`));
+    tile('S', 'sleep', '깬 지', durHtml(st.el), st.pct, st.color === 'var(--nap)' ? 'var(--accent)' : st.color, `${st.next} ${hm(st.pred)}쯤`));
 }
 
 function forgotLine(open) { return `<span class="do over">혹시 깬 기록을 잊으셨나요?</span> <button class="fixb" data-act="edit" data-id="${esc(open.id)}">깬 시각 입력</button>`; }
@@ -847,6 +858,8 @@ function viewDay() {
   const key = S.day, today = dkey(Date.now());
   const a = babyAge(key);
   const sm = daySummary(key), ns = nightStats(key);
+  const lastNight = key === today && set('nightMode') !== 'midnight' && !ns.tot;   // 오늘 밤잠이 아직 없을 때만 어젯밤을 보여준다(저녁에 밤잠이 시작되면 오늘 밤잠으로 바뀜)
+  const nsShow = lastNight ? nightStats(addDays(key, -1)) : ns;
   // 밤잠에서 깬 시각을 따로 한 줄로: 마지막으로 깬 것은 '기상', 그 전(다시 잠든 경우)은 '새벽 깸'
   // 예) 05:00 새벽 깸 → 05:10 새벽 수유 → 05:20 밤잠 → 07:00 기상. 목록은 아침부터 시간순
   const a0 = dstart(key), a1 = dstart(addDays(key, 1)), mw = morningWake(key);
@@ -866,7 +879,7 @@ function viewDay() {
     <span><i style="background:var(--feed);height:3px"></i>수유</span><span><i style="background:var(--bath);height:3px"></i>목욕</span></div></div>
   <div class="sharebar"><button class="pill" data-act="shareDay">📤 이 날 요약 공유</button></div>
   <div class="sum4">${tileS('feed', 't-feed', `수유 ${sm.feedN}회`, `${sm.feedMl}<small>ml</small>`)}${tileS('sleep', 't-sleep', `낮잠 ${sm.napN}회`, sm.napMin ? durHtml(sm.napMin) : '-')}
-    ${tileS('sleep', 't-sleep', '밤잠', ns.tot ? durHtml(ns.tot) : '-')}${tileS('diaper', 't-diaper', '기저귀', `소${sm.pee}·대${sm.poo}`)}</div>
+    ${tileS('sleep', 't-sleep', lastNight ? '어젯밤' : '밤잠', nsShow.tot ? durHtml(nsShow.tot) : '-')}${tileS('diaper', 't-diaper', '기저귀', `소변${sm.pee}·대변${sm.poo}`)}</div>
   <div class="card list"><div class="h">기록 전체 · ${recs.length}건<button class="chip add xs" data-act="addPast">＋ 기록 추가</button></div>
     ${pd.next ? `<div class="pnext">다음 계획 · <b>${esc(pd.next.n)} ${hm(pd.next.t)}쯤</b></div>` : ''}
     <button class="psum" data-act="dayMore" data-k="planOpen"><span class="k">계획 대비<small>${esc(planFor(key).name)}</small></span><span class="v">${pd.line}</span><span class="ar">${S.planOpen ? '▴' : '›'}</span></button>
@@ -1101,11 +1114,12 @@ function weekTableCard(keys, today) {
     return { key, any, sm, ns, done: key < today };
   });
   const cell = (ok, v) => (ok ? v : '<span class="lbl">-</span>');
+  const two = (big, small) => `${big}<small>${small}</small>`;   // 값 + 아래 작은 설명(횟수·최장)
   const body = rows.map((r) => `<${r.key > today ? 'div class="trow future"' : `button class="trow" data-act="patDay" data-d="${r.key}"`}>
       <span>${md(r.key)} (${wd(r.key)})${r.key === today ? ' <span class="lbl">진행 중</span>' : ''}</span>
-      <span class="c-feed">${cell(r.sm.feedN, `${r.sm.feedN}·${r.sm.feedMl}`)}</span>
-      <span class="c-nap">${cell(r.sm.napN, `${r.sm.napN}·${minShort(r.sm.napMin)}`)}</span>
-      <span class="c-night">${cell(r.ns.tot, `${minShort(r.ns.tot)} <span class="lbl">(${minShort(r.ns.longest)})</span>${r.ns.open ? ' <span class="lbl">진행 중</span>' : ''}`)}</span></${r.key > today ? 'div' : 'button'}>`).join('');
+      <span class="c-feed">${cell(r.sm.feedN, two(`${r.sm.feedMl}ml`, `${r.sm.feedN}회`))}</span>
+      <span class="c-nap">${cell(r.sm.napN, two(minTxt(r.sm.napMin), `${r.sm.napN}회`))}</span>
+      <span class="c-night">${cell(r.ns.tot, two(minTxt(r.ns.tot), r.ns.open ? '진행 중' : `최장 ${minTxt(r.ns.longest)}`))}</span></${r.key > today ? 'div' : 'button'}>`).join('');
   // 평균: 기록이 있는 지난 날만(오늘은 진행 중이라 제외)
   const done = rows.filter((r) => r.done && r.any);
   const a = (f) => avg(done.map(f));
@@ -1117,9 +1131,9 @@ function weekTableCard(keys, today) {
   const ts = daySummary(tk), n1 = nightStats(y1), n2 = nightStats(y2);
   const nd = n1.tot && n2.tot && !n1.open && !n2.open ? n1.tot - n2.tot : null;
   return `<div class="card"><div class="h">7일 비교<span>오늘은 평균에서 빼요</span></div>
-    <div class="ttable"><div class="thead"><span>날짜</span><span>수유 <small>회·ml</small></span><span>낮잠</span><span>밤잠 <small>(최장)</small></span></div>${body}
-    <div class="tavg"><span>평균 <span class="lbl">${done.length}일</span></span><span class="c-feed">${fM == null ? '-' : `${f1(fN)}·${Math.round(fM)}`}</span>
-      <span class="c-nap">${nM == null ? '-' : `${f1(nN)}·${minShort(nM)}`}</span><span class="c-night">${tN == null ? '-' : `${minShort(tN)} <span class="lbl">(${minShort(lN)})</span>`}</span></div></div></div>
+    <div class="ttable"><div class="thead"><span>날짜</span><span>수유</span><span>낮잠</span><span>밤잠</span></div>${body}
+    <div class="tavg"><span>평균 <span class="lbl">${done.length}일</span></span><span class="c-feed">${fM == null ? '-' : two(`${Math.round(fM)}ml`, `${f1(fN)}회`)}</span>
+      <span class="c-nap">${nM == null ? '-' : two(minTxt(nM), `${f1(nN)}회`)}</span><span class="c-night">${tN == null ? '-' : two(minTxt(tN), `최장 ${minTxt(lN)}`)}</span></div></div></div>
   <div class="mini"><div><div class="k">오늘 수유 (지금까지)</div><b class="c-feed">${ts.feedN}회 · ${ts.feedMl}ml</b></div>
     <div><div class="k">어제보다 밤잠</div><b class="c-night">${nd == null ? '-' : `${nd >= 0 ? '+' : '−'}${minTxt(Math.abs(nd))}`}</b></div></div>`;
 }

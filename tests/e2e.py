@@ -658,7 +658,7 @@ async def main():
         # 일정 추가(미래 날짜) → 달력·다가오는 일정·홈 알림
         tmr = await ev("addDays(dkey(Date.now()),1)")
         await ev(f"CAL.m='{tmr[:7]}'; CAL.sel='{tmr}'; render()")
-        await p5.click('.fab'); await p5.fill('#ct', '소아과 진료'); await p5.fill('#ctm', '10:30')
+        await p5.click('.dl-b [data-act="calAdd"]'); await p5.fill('#ct', '소아과 진료'); await p5.fill('#ctm', '10:30')
         await p5.click('#ccat [data-c="검진"]'); await p5.click('#save'); await p5.wait_for_timeout(200)
         er = await ev("JSON.stringify(live().filter(r=>r.type==='event').map(r=>[r.d1,r.d2,hm(r.start),dk(r)]))")
         check('일정 추가: 제목·분류·시간·날짜 저장', f'["소아과 진료","검진","10:30","{tmr}"]' in er, er)
