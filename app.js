@@ -101,14 +101,30 @@ async function call(action, data, auth = S.auth) {
   }
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), 40000), t0 = Date.now();
+  const req = { ctrl, t0, action };
+  // 화면이 꺼지는 순간 보내는 저장은 keepalive: 휴대폰이 앱을 멈춰도 서버까지는 도착한다(같은 id 재전송은 서버가 무시)
+  const keepalive = document.hidden && action === 'batch';
+  req.keepalive = keepalive; inflight.add(req);
   try {
-    const res = await fetch(auth.url, { method: 'POST', body: JSON.stringify({ action, pin: auth.pin, data }), headers: { 'Content-Type': 'text/plain;charset=utf-8' }, redirect: 'follow', signal: ctrl.signal });
+    const res = await fetch(auth.url, { method: 'POST', keepalive, body: JSON.stringify({ action, pin: auth.pin, data }), headers: { 'Content-Type': 'text/plain;charset=utf-8' }, redirect: 'follow', signal: ctrl.signal });
     const j = await res.json();
     if (!j.ok) { const e = new Error(j.err || '서버 오류'); e.server = true; e.code = j.code || 'error'; e.pinUsed = auth.pin; throw e; }
     S.api = j.api || 1;
     gotMeta(j, t0);
     return j;
-  } finally { clearTimeout(t); }
+  } catch (e) {
+    if (req.resumed) { const r = new Error('다시 연결'); r.code = 'resumed'; r.pinUsed = auth.pin; throw r; }
+    throw e;
+  } finally { clearTimeout(t); inflight.delete(req); }
+}
+/* 진행 중인 서버 요청. 앱이 뒤로 갔다 오는 순간 진행 중인 요청은 휴대폰이 멈춰 둔 경우가 많아(최대 40초 대기) 끊고 새로 보낸다.
+   기록 확인(sync·load)과 저장 묶음(batch)만 끊는다: 다시 보내도 안전하고(서버가 같은 id를 무시), PIN 변경 같은 요청은 끊으면 어긋난다.
+   화면이 꺼질 때 보낸 keepalive 저장은 휴대폰이 멈추지 않으므로 그대로 둔다 */
+const inflight = new Set();
+function abortStale() {
+  let n = 0;
+  inflight.forEach((x) => { if (!x.keepalive && /^(sync|load|batch)$/.test(x.action)) { x.resumed = true; x.ctrl.abort(); n++; } });
+  return n;
 }
 /* 관리자가 기록을 지우면(서버의 reset 시각이 바뀌면) 이 휴대폰 저장본도 비우고 새로 받는다.
    지우기 전에 만든 저장 대기 기록은 버린다(서버도 받지 않음). 지운 뒤에 만든 것만 남긴다. */
@@ -189,10 +205,20 @@ function applyMeta(d, full) {
   }
 }
 
-let syncing = false, lastSync = 0;
-async function sync(full) {
-  if (!S.auth || syncing) return;
+let syncing = false, lastSync = 0, syncP = null;
+function sync(full) {
+  if (!S.auth) return Promise.resolve();
+  if (syncing) return syncP;
+  syncP = doSync(full);
+  return syncP;
+}
+/* 서버 확인 걸린 시간(최근 20번, 설정 화면에 표시) */
+function logSyncMs(ms) { const a = LS.get('syncMs', []); a.push(Math.round(ms)); LS.set('syncMs', a.slice(-20)); }
+async function doSync(full) {
   syncing = true;
+  let again = false;
+  const t0 = Date.now();
+  const before = new Set(dupPairs().map((x) => x[2]));
   try {
     await flush();
     if (!S.auth) return;
@@ -203,6 +229,7 @@ async function sync(full) {
     if (!S.auth) return;
     if ((S.wipeN || 0) !== wipe0) return;   // 응답 도중 기록 지우기를 알게 됨: 이 응답은 버리고 새로 전체를 받음
     lastSync = Date.now();
+    logSyncMs(lastSync - t0);
     if (j.api && j.api < 6 && j.api >= 3 && S.auth.url !== 'demo' && !S.apiWarned) { S.apiWarned = true; note('서버 코드를 새 버전으로 배포해주세요 (일정·PIN 보안·메모 보호)'); }
     if ((!j.api || j.api < 3) && S.auth.url !== 'demo' && !S.apiWarned) { S.apiWarned = true; note('서버 코드를 새 버전으로 배포해주세요 (성장 기록 보관)'); }
     if (!isFull && j.data.same) { S.rev = j.rev; return; }
@@ -217,10 +244,22 @@ async function sync(full) {
     S.serverTime = j.now; S.rev = j.rev;
     if (j.user && j.user !== S.auth.user) { S.auth.user = j.user; LS.set('auth', S.auth); }
     saveCache();
+    // 내가 기록한 뒤 다른 가족의 같은 기록이 늦게 도착한 경우: 홈 주의 카드와 함께 바로 알려준다
+    const fresh = dupPairs().filter((x) => !before.has(x[2]));
+    if (fresh.length) { const o = fresh[0].slice(0, 2).find((r) => r.by !== S.auth.user) || fresh[0][0]; note(`${o.by}도 ${hm(o.start)}에 ${recText(o).t}을(를) 기록했어요. 겹치면 홈에서 하나 지워주세요`); }
     bgRender();
   } catch (e) {
-    if (isAuthErr(e)) authFailed(null); else lockedNote(e);
-  } finally { syncing = false; }
+    if (e.code === 'resumed') again = true;
+    else if (isAuthErr(e)) authFailed(null); else lockedNote(e);
+  } finally { syncing = false; if (!again) checking(false); }
+  if (again) return sync(full);   // 멈춰 있던 요청을 끊었으면 바로 다시 확인
+}
+/* 앱을 켜거나 다시 열었을 때, 서버 확인이 끝날 때까지 홈 '마지막 기록' 칸에 '가족 기록 확인 중'을 보인다 */
+let checkT = 0;
+function checking(on) {
+  clearTimeout(checkT);
+  if (on) { S.checking = true; checkT = setTimeout(() => checking(false), 30000); }
+  else if (S.checking) { S.checking = false; if (S.auth) bgRender(); }   // 로그아웃됐으면 로그인 화면 안내 문구를 지우지 않게
 }
 /* 화면을 막지 않고, 최근 동기화가 오래됐으면 조용히 새로 받아온다 */
 function quickSync() { if (Date.now() - lastSync > 15000) sync(); }
@@ -248,7 +287,7 @@ function enqueue(op) {
   scheduleFlush();
 }
 let flushTimer = 0, flushing = null, retryDelay = 0;
-function scheduleFlush(ms = 1200) { clearTimeout(flushTimer); flushTimer = setTimeout(() => flush(), ms); }
+function scheduleFlush(ms = 400) { clearTimeout(flushTimer); flushTimer = setTimeout(() => flush(), ms); }
 const saveQueue = () => { LS.set('queue', S.queue); LS.set('failed', S.failed); };
 /* 대기열을 한 번에 묶어 보낸다. 일시적 오류는 계속 재시도하고, 기록은 절대 버리지 않는다.
    5번 넘게 거절된 것만 '저장 못 한 기록'으로 옮겨 설정에서 다시 시도/버리기를 고를 수 있게 한다. */
@@ -267,6 +306,7 @@ async function flush() {
         saveQueue();
         if (isAuthErr(e)) authFailed(null);
         else if (e.code === 'locked') { lockedNote(e); scheduleFlush(5 * MIN); }
+        else if (e.code === 'resumed') scheduleFlush(50);
         else {
           if (e.code === 'error') note('저장이 안 되고 있어요: ' + e.message);
           retryDelay = Math.min((retryDelay || 4000) * 2, 120000); scheduleFlush(retryDelay);
@@ -792,7 +832,7 @@ function planStrip(st) {
 }
 function lastCard(r) {
   const x = recText(r), just = S.justSaved && S.justSaved.id === r.id && Date.now() < S.justSaved.until;
-  return `<button class="card last${just ? ' just' : ''}" data-act="edit" data-id="${esc(r.id)}">${recIcon(r)}<div style="min-width:0"><div class="k">${just ? '✓ 방금 저장' : '마지막 기록'}</div>
+  return `<button class="card last${just ? ' just' : ''}${S.checking && !just ? ' chk' : ''}" data-act="edit" data-id="${esc(r.id)}">${recIcon(r)}<div style="min-width:0"><div class="k">${just ? '✓ 방금 저장' : S.checking ? '<i class="spin"></i>가족 기록 확인 중' : '마지막 기록'}</div>
     <div class="v">${esc(x.t)} · ${hm(r.start)}</div></div><span class="ed">고치기 ›</span></button>`;
 }
 /* 홈 주의 카드(상태 카드 바로 아래): 저장 실패 · 고열/미열 · 주의 변 색 · 같은 기록 중복 */
@@ -821,13 +861,14 @@ function cautionCards() {
   });
   return html;
 }
-/* 서로 다른 가족이 3분 안에 같은 종류(분유·기저귀)를 기록한 쌍. 늦게 만든 쪽(b)을 지우기 후보로 */
+/* 서로 다른 가족이 10분 안에 같은 종류(분유·기저귀·목욕)를 기록한 쌍. 늦게 만든 쪽(b)을 지우기 후보로
+   (상대 기록이 늦게 도착해 모르고 다시 기록한 경우를 잡는다) */
 function dupPairs() {
   const now = Date.now(), ok = new Set(LS.get('dupOk', [])), out = [];
-  const list = live().filter((r) => (r.type === 'feed' || r.type === 'diaper') && now - r.start < 6 * HOUR);
+  const list = live().filter((r) => (r.type === 'feed' || r.type === 'diaper' || r.type === 'bath') && now - r.start < 6 * HOUR);
   for (let i = 0; i < list.length; i++) for (let j = i + 1; j < list.length; j++) {
     const a = list[i], b = list[j];
-    if (a.type !== b.type || a.by === b.by || Math.abs(a.start - b.start) > 3 * MIN) continue;
+    if (a.type !== b.type || a.by === b.by || Math.abs(a.start - b.start) > 10 * MIN) continue;
     const [x, y] = (a.created || 0) <= (b.created || 0) ? [a, b] : [b, a];
     const k = [x.id, y.id].sort().join('|');
     if (!ok.has(k)) out.push([x, y, k]);
@@ -1298,6 +1339,8 @@ function viewSettings() {
   ${S.failed.length ? `<div class="gh danger">저장 못 한 기록 ${S.failed.length}건</div>
     <div class="grp" style="padding:12px 14px"><div class="lbl" style="margin-bottom:8px">${esc(S.failed[0].err || '')}</div>
     <div class="inline"><button class="chip on" data-act="retryFailed">다시 시도</button><button class="chip danger" data-act="dropFailed">버리기</button></div></div>` : ''}
+  ${(() => { const a = LS.get('syncMs', []); if (!a.length) return ''; const v = [...a].sort((x, y) => x - y); const med = v[Math.floor(v.length / 2)];
+    return `<div class="gh">서버 연결</div><div class="grp"><div class="sb"><span class="k">가족 기록 확인 걸린 시간<small>최근 ${a.length}번 · 가운데 값 ${(med / 1000).toFixed(1)}초 · 가장 오래 ${(v[v.length - 1] / 1000).toFixed(1)}초</small></span></div></div>`; })()}
   <div class="gh">가족 · 이 기기</div>
   <div class="grp">${isAdmin() ? row('가족 · PIN 관리', `${S.users.filter((u) => u.active).length}명`, 'setUsers') : `<div class="sb"><span class="k">가족<small>PIN 관리는 관리자(${esc((S.users[0] || {}).name || '')})만</small></span><span class="v">${S.users.filter((u) => u.active).length}명</span></div>`}
     ${row('내 PIN 바꾸기', '', 'changePin')}
@@ -2204,8 +2247,8 @@ function saveDayMemo(el, quiet) {
 setInterval(() => { if (S.auth && !document.hidden && S.tab === 'home') bgRender(); }, 30000);
 setInterval(() => { if (S.auth && !document.hidden) sync(); }, 20000);
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden) { const m = $('#daymemo'); if (m) saveDayMemo(m, true); writeCache(); if (S.queue.length) flush(); return; }
-  if (S.auth) { render(); sync(); warmServer(); }
+  if (document.hidden) { const m = $('#daymemo'); if (m) saveDayMemo(m, true); writeCache(); if (S.queue.length) { clearTimeout(flushTimer); flush(); } return; }
+  if (S.auth) { abortStale(); checking(true); render(); sync(); }
   checkUpdate();
 });
 window.addEventListener('online', () => { if (S.auth) flush(); });
@@ -2226,6 +2269,7 @@ function safeReload() {
   if (S.auth) {
     const had = loadCache();
     if (!had) S.loading = true;
+    else checking(true);
     render();
     sync(!had).finally(() => { if (S.loading) { S.loading = false; render(); } });
     warmServer();

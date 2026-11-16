@@ -329,6 +329,8 @@ async def main():
         check('테마는 서버로 안 보냄', 'dark' not in await pg.evaluate("JSON.stringify(JSON.parse(localStorage.demoDB).settings)"))
         await pg.evaluate("LOOK.set('theme','lavender'); LOOK.set('font','pretendard'); render()")
         gid = await pg.evaluate("(()=>{ const n=Date.now(); const r=addRec({type:'feed',start:n-60000,value:120,by:'장모님'}); S.memos[dkey(n)]={text:'병원 다녀옴',by:'아내'}; render(); return r.id; })()")
+        # 데모 기록과 10분 안에 겹쳐 생긴 중복 안내(이름이 보이는 카드)는 이 검사와 무관하므로 미리 '둘 다 맞아요' 처리
+        await pg.evaluate("LS.set('dupOk', dupPairs().map(x=>x[2])); render()")
         home = await pg.inner_text('#app')
         await pg.click('#tabs [data-tab="day"]'); day = await pg.inner_text('#app')
         await pg.click(f'#app [data-act="edit"][data-id="{gid}"]'); sheet = await pg.inner_text('.sheet'); await pg.evaluate('closeSheet()')
@@ -611,7 +613,7 @@ async def main():
         # 데모 기록과 앞 테스트 기록이 시각상 우연히 겹친 쌍은 미리 '둘 다 맞아요' 처리(시각 의존 방지)
         await ev("LS.set('dupOk', dupPairs().map(x=>x[2])); render()")
         await ev("addRec({type:'feed',start:Date.now()-2*MIN,value:150,by:'아내'}); addRec({type:'feed',start:Date.now()-MIN,value:150,by:'재현'})")
-        check('다른 가족이 3분 안에 같은 분유 → 중복 안내', await ev("!!$('.caution.dup')"))
+        check('다른 가족이 10분 안에 같은 분유 → 중복 안내', await ev("!!$('.caution.dup')"))
         n0 = await ev("live().filter(r=>r.type==='feed').length")
         await p5.click('.caution.dup [data-act="dupDel"]'); await p5.wait_for_timeout(150)
         check('"하나 지우기" → 늦게 만든 기록 하나만 지움', await ev("live().filter(r=>r.type==='feed').length") == n0 - 1 and not await ev("!!$('.caution.dup')"))

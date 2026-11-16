@@ -616,3 +616,9 @@ html[data-theme="dark"] .btn-big.on { background: var(--hero); }
 .leg i { border-radius: 50%; }
 .home.tighter .btn-big { padding: 5px 0 4px; }
 .home.tighter .btns { gap: 6px; }
+
+/* 12차(2026-11-16): 앱을 열 때 가족 기록 확인 중 표시 */
+.last.chk .k { color: var(--ink); }
+.last .spin { display: inline-block; width: 9px; height: 9px; margin-right: 5px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; vertical-align: -1px; animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .last .spin { animation: none; border-right-color: currentColor; opacity: .6; } }
